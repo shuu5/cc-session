@@ -23,13 +23,15 @@ if [[ -d "$PLUGINS_BASE" ]]; then
     done
 fi
 
-# DEV_ prefix の環境変数を systemd scope 内へ伝播（systemd-run 使用時のみ）
+# CLD_ENV_PASS_PREFIX で指定した prefix の環境変数を systemd scope へ伝播（デフォルト: なし）
 ENV_ARGS=()
-while IFS= read -r line; do
-    key="${line%%=*}"
-    val="${line#*=}"
-    ENV_ARGS+=(--setenv="${key}=${val}")
-done < <(env | grep '^DEV_' || true)
+if [[ -n "${CLD_ENV_PASS_PREFIX:-}" ]]; then
+    while IFS= read -r line; do
+        key="${line%%=*}"
+        val="${line#*=}"
+        ENV_ARGS+=(--setenv="${key}=${val}")
+    done < <(env | grep "^${CLD_ENV_PASS_PREFIX}" || true)
+fi
 
 # systemd-run があればメモリ制限付き scope で、なければ直接起動（環境変数は exec で継承）
 if command -v systemd-run &>/dev/null; then

@@ -92,6 +92,6 @@ fi
 
 ARGS+=(--interval "$INTERVAL" --max-cycles "$MAX_CYCLES")
 ARGS+=(--notify-dir "$NOTIFY_DIR")
-ARGS+=(--complete-regex "PHASE_COMPLETE" --stagnate-sec 600)
+ARGS+=(--stagnate-sec 600)
 
 exec "$SCRIPT_DIR/cld-observe-any" "${ARGS[@]}"

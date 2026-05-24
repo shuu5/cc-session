@@ -33,7 +33,7 @@ CLD_OBSERVE_ANY="$SCRIPT_DIR/cld-observe-any"
 }
 
 # ---------------------------------------------------------------------------
-# AC-3: twl validate または該当 specialist で WARNING 解消確認
+# AC-3: 静的検証で WARNING 解消確認
 # worker-code-reviewer (confidence 92%) が報告した dead mock パターンが解消されていること:
 #   - フルパス subprocess をインターセプトできない export -f が存在しないこと
 #   - run_observe_once ヘルパーが存在しないこと（dead code）

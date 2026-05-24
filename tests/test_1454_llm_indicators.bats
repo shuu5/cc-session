@@ -80,7 +80,7 @@ EOF
 }
 
 @test "ac2(#1454): detect_thinking が 'Fiddle-faddling 5m' を検知すること (RED)" {
-    # Wave 50 cycle #1 実測フォーマット
+    # capture sample #1 実測フォーマット
     run bash <<'EOF'
 source "$LLM_INDICATORS_LIB"
 pane_text="Fiddle-faddling 5m"
@@ -211,11 +211,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AC3: Wave 50/51 capture 再現 sample で STAGNATE-300 誤発火が解消
+# AC3: capture 再現 sample で STAGNATE-300 誤発火が解消
 # ---------------------------------------------------------------------------
 
-@test "ac3(#1454): Wave 50 cycle #1 'Fiddle-faddling 5m' pane で STAGNATE を抑止すること (RED)" {
-    # Wave 50 cycle #1 で実測: Fiddle-faddling 5m 表示中に STAGNATE-300 誤発火 30+ 件
+@test "ac3(#1454): capture sample #1 'Fiddle-faddling 5m' pane で STAGNATE を抑止すること (RED)" {
+    # capture sample #1 で実測: Fiddle-faddling 5m 表示中に STAGNATE-300 誤発火 30+ 件
     run bash <<'EOF'
 source "$LLM_INDICATORS_LIB"
 pane_text="$(printf "> Worker に指示中...\n  ✓ setup 完了\nFiddle-faddling 5m")"
@@ -232,7 +232,7 @@ EOF
     [[ "$status" -eq 0 ]]
 }
 
-@test "ac3(#1454): Wave 50 cycle #4 'Cogitating 4m' pane で STAGNATE を抑止すること (RED)" {
+@test "ac3(#1454): capture sample #4 'Cogitating 4m' pane で STAGNATE を抑止すること (RED)" {
     run bash <<'EOF'
 source "$LLM_INDICATORS_LIB"
 pane_text="$(printf "> Opus 4.7 起動\nCogitating 4m")"

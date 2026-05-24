@@ -28,7 +28,7 @@
       "properties": {
         "window_name": {
           "type": "string",
-          "description": "tmux window 名（意味論的命名、例: wt-twill-feat-290-i290-a1b2c3d4）"
+          "description": "tmux window 名（意味論的命名、例: wt-myrepo-feat-i42-a1b2c3d4）"
         },
         "session": {
           "type": "string",

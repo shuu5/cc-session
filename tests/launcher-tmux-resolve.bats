@@ -1,18 +1,9 @@
 #!/usr/bin/env bats
 # launcher-tmux-resolve.bats
-# Issue #1218: tech-debt: tmux kill-window / set-option
-# AC2 — set-option で resolved target (session:index) が使われること
+# lib/tmux-resolve.sh の _resolve_window_target テスト
 #
-# RED テスト: lib/tmux-resolve.sh が実装され、orchestrator の set-option callsite が
-# _resolve_window_target 経由で session:index 形式を使うまで fail する。
-#
-# 設計:
-#   - issue-lifecycle-orchestrator.sh L368 の
-#     "tmux set-option -t "$window_name" remain-on-exit on"
-#     は window_name（名前のみ）を -t に渡しており、複数 session 環境で ambiguous になる。
-#   - 修正後: _resolve_window_target で session:index に解決してから set-option を呼ぶ
-#   - lib/tmux-resolve.sh の _resolve_window_target が呼ばれ、
-#     set-option は "main:3"（session:index）形式で呼ばれること
+# window_name（名前のみ）を -t に渡すと複数 session 環境で ambiguous になるため、
+# _resolve_window_target で session:index 形式（例: "main:3"）に解決することを確認する。
 #
 # tmux mock 戦略:
 #   - list-windows -a が "main:3 wt-target" を返す（unique 解決）

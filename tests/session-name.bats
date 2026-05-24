@@ -114,12 +114,12 @@ _setup_repo() {
 @test "generate_window_name: bare+worktree 構成でリポジトリ名がブランチ名と混同されない" {
   source "$SESSION_NAME_SH"
   local wt
-  wt=$(_setup_repo "twill" "feat-test")
+  wt=$(_setup_repo "myrepo" "feat-test")
 
   run generate_window_name wt "$wt" "$wt"
   [ "$status" -eq 0 ]
-  # repo 名が twill（branch 名 feat-test ではない）
-  [[ "$output" == *-twill-* ]]
+  # repo 名が myrepo（branch 名 feat-test ではない）
+  [[ "$output" == *-myrepo-* ]]
   [[ "$output" == *feat-test* ]]
 }
 

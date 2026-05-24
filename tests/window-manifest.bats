@@ -24,24 +24,24 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "manifest_append_entry: creates manifest when file does not exist" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-feat-290-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
+    manifest_append_entry "wt-myrepo-feat-290-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
 
     [[ -f "$WINDOW_MANIFEST_FILE" ]]
     run jq -r '.schema_version' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "1" ]]
     run jq -r '.entries[0].window_name' "$WINDOW_MANIFEST_FILE"
-    [[ "$output" == "wt-twill-feat-290-a1b2c3d4" ]]
+    [[ "$output" == "wt-myrepo-feat-290-a1b2c3d4" ]]
     run jq -r '.entries[0].tombstone' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "false" ]]
 }
 
 @test "manifest_append_entry: appends to existing manifest" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-first-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
-    manifest_append_entry "fk-twill-first-b2c3d4e5" "main" 2 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "fk"
+    manifest_append_entry "wt-myrepo-first-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
+    manifest_append_entry "fk-myrepo-first-b2c3d4e5" "main" 2 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "fk"
 
     run jq '.entries | length' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "2" ]]
@@ -54,8 +54,8 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "manifest_append_entry: uses atomic write (no partial temp file)" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-feat-290-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
+    manifest_append_entry "wt-myrepo-feat-290-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
 
     # 中間 .XXXXXX 一時ファイルが残っていないことを確認（.lock ファイルは除外）
     local manifest_dir manifest_base leftover
@@ -71,9 +71,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "manifest_tombstone_entry: marks entry as tombstone=true" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-feat-290-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
-    manifest_tombstone_entry "wt-twill-feat-290-a1b2c3d4"
+    manifest_append_entry "wt-myrepo-feat-290-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
+    manifest_tombstone_entry "wt-myrepo-feat-290-a1b2c3d4"
 
     run jq -r '.entries[0].tombstone' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "true" ]]
@@ -81,11 +81,11 @@ teardown() {
 
 @test "manifest_tombstone_entry: does not affect other entries" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-first-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
-    manifest_append_entry "fk-twill-second-b2c3d4e5" "main" 2 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "fk"
-    manifest_tombstone_entry "wt-twill-first-a1b2c3d4"
+    manifest_append_entry "wt-myrepo-first-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
+    manifest_append_entry "fk-myrepo-second-b2c3d4e5" "main" 2 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "fk"
+    manifest_tombstone_entry "wt-myrepo-first-a1b2c3d4"
 
     run jq -r '.entries[0].tombstone' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "true" ]]
@@ -103,8 +103,8 @@ teardown() {
     # 警告を stderr に出すが exit 0（呼び出し元を停止しない）
     run bash -c "
         source '$MANIFEST_LIB'
-        manifest_append_entry 'wt-twill-feat-290-a1b2c3d4' 'main' 1 \
-            '/home/user/projects/twill' '/home/user/projects/twill' 'wt' 2>&1
+        manifest_append_entry 'wt-myrepo-feat-290-a1b2c3d4' 'main' 1 \
+            '/home/user/projects/myrepo' '/home/user/projects/myrepo' 'wt' 2>&1
         cat '$WINDOW_MANIFEST_FILE'
     "
     [[ "$status" -eq 0 ]]
@@ -135,10 +135,10 @@ teardown() {
 # Scenario: unknown field tolerance
 # ---------------------------------------------------------------------------
 @test "manifest_tombstone_entry: preserves unknown fields on tombstone" {
-    printf '%s\n' '{"schema_version":1,"entries":[{"window_name":"wt-twill-a1b2c3d4","session":"main","index":1,"worktree_path":"/p","cwd":"/p","prefix":"wt","created_at":"2026-01-01T00:00:00Z","tombstone":false,"future_field":"preserved"}]}' \
+    printf '%s\n' '{"schema_version":1,"entries":[{"window_name":"wt-myrepo-a1b2c3d4","session":"main","index":1,"worktree_path":"/p","cwd":"/p","prefix":"wt","created_at":"2026-01-01T00:00:00Z","tombstone":false,"future_field":"preserved"}]}' \
         > "$WINDOW_MANIFEST_FILE"
     source "$MANIFEST_LIB"
-    manifest_tombstone_entry "wt-twill-a1b2c3d4"
+    manifest_tombstone_entry "wt-myrepo-a1b2c3d4"
 
     run jq -r '.entries[0].future_field' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "preserved" ]]
@@ -151,8 +151,8 @@ teardown() {
         > "$WINDOW_MANIFEST_FILE"
     source "$MANIFEST_LIB"
 
-    run manifest_append_entry "wt-twill-feat-290-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
+    run manifest_append_entry "wt-myrepo-feat-290-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
     [[ "$status" -eq 0 ]]
     run jq '.entries | length' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "1" ]]
@@ -163,10 +163,10 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "CLI tombstone: window-manifest.sh tombstone <window_name> works" {
     source "$MANIFEST_LIB"
-    manifest_append_entry "wt-twill-feat-290-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
+    manifest_append_entry "wt-myrepo-feat-290-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
 
-    run bash "$MANIFEST_LIB" tombstone "wt-twill-feat-290-a1b2c3d4"
+    run bash "$MANIFEST_LIB" tombstone "wt-myrepo-feat-290-a1b2c3d4"
     [[ "$status" -eq 0 ]]
     run jq -r '.entries[0].tombstone' "$WINDOW_MANIFEST_FILE"
     [[ "$output" == "true" ]]
@@ -230,8 +230,8 @@ teardown() {
     run bash -c "
         export WINDOW_MANIFEST_FILE='$WINDOW_MANIFEST_FILE'
         source '$MANIFEST_LIB'
-        manifest_append_entry 'wt-twill-feat-323-a1b2c3d4' 'main' 1 \
-            '/home/user/projects/twill' '/home/user/projects/twill' 'wt' 2>&1
+        manifest_append_entry 'wt-myrepo-feat-323-a1b2c3d4' 'main' 1 \
+            '/home/user/projects/myrepo' '/home/user/projects/myrepo' 'wt' 2>&1
         echo \"exit:\$?\"
     "
     [[ "$output" == *"lockfile is a symlink"* ]]
@@ -245,8 +245,8 @@ teardown() {
     source "$MANIFEST_LIB"
 
     # まず正常にエントリを作成
-    manifest_append_entry "wt-twill-feat-323-a1b2c3d4" "main" 1 \
-        "/home/user/projects/twill" "/home/user/projects/twill" "wt"
+    manifest_append_entry "wt-myrepo-feat-323-a1b2c3d4" "main" 1 \
+        "/home/user/projects/myrepo" "/home/user/projects/myrepo" "wt"
 
     # lockfile パスにシンボリックリンクを作成（既存lockfileを削除してシンボリックリンクに置換）
     local lockfile_path="${WINDOW_MANIFEST_FILE}.lock"
@@ -258,7 +258,7 @@ teardown() {
     run bash -c "
         export WINDOW_MANIFEST_FILE='$WINDOW_MANIFEST_FILE'
         source '$MANIFEST_LIB'
-        manifest_tombstone_entry 'wt-twill-feat-323-a1b2c3d4' 2>&1
+        manifest_tombstone_entry 'wt-myrepo-feat-323-a1b2c3d4' 2>&1
         echo \"exit:\$?\"
     "
     [[ "$output" == *"lockfile is a symlink"* ]]

@@ -5,7 +5,7 @@
 # パスを共有する。すべて環境変数で上書き可能で、デフォルトは中立な
 # `claude-session` namespace（特定プロジェクトに依存しない）。
 #
-# 別プロジェクト（例: twill）に組み込む場合は、呼び出し側で
+# 別プロジェクトに組み込む場合は、呼び出し側で
 #   SESSION_STATE_DIR / SESSION_SHARE_DIR 等を export してから起動すれば
 # そのプロジェクト固有の namespace に切り替えられる。
 

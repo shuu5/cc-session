@@ -109,7 +109,7 @@ EOF
     # RED: 現状 cld-observe-any に COMPACTION-DETECTED emit ロジックが存在しない
     # 実装後: "Compacting" を pane 内容から検知して [COMPACTION-DETECTED] を emit する
     run bash <<EOF
-win="ap-test-win-1475-ac2"
+win="wt-test-win-1475-ac2"
 capture="Compacting…"
 export win capture
 
@@ -136,7 +136,7 @@ export -f tmux
 
 output=\$(_TEST_MODE=1 CLD_OBSERVE_ANY_SCRIPT_DIR="$script_dir" \
     bash "$cld_observe_any" --window "\$win" --once \
-    --complete-regex "PHASE_COMPLETE" --stagnate-sec 10 2>/dev/null)
+    --complete-regex "COMPLETE_MARKER" --stagnate-sec 10 2>/dev/null)
 echo "\$output"
 echo "\$output" | grep -q "COMPACTION-DETECTED"
 EOF
@@ -164,7 +164,7 @@ EOF
     # → pane に "Compacting…" が存在しなくなった後もフラグを維持して STAGNATE 抑止が必要
     # 実装後: COMPACTION_ACTIVE フラグ or event-dir への書き込みで持続する
     run bash <<EOF
-win="ap-test-win-1475-ac3"
+win="wt-test-win-1475-ac3"
 
 # pane 静止後（compaction 完了後）を模倣: pane に indicator 文字列なし
 # detect_thinking は空 → 現状は STAGNATE 発火 → RED
@@ -195,7 +195,7 @@ export -f tmux
 output=\$(_TEST_MODE=1 CLD_OBSERVE_ANY_SCRIPT_DIR="$script_dir" \
     COMPACTION_ACTIVE=1 \
     bash "$cld_observe_any" --window "\$win" --once \
-    --complete-regex "PHASE_COMPLETE" --stagnate-sec 10 2>/dev/null)
+    --complete-regex "COMPLETE_MARKER" --stagnate-sec 10 2>/dev/null)
 echo "\$output"
 # 実装後: COMPACTION_ACTIVE フラグで STAGNATE 抑止 → STAGNATE-10 が emit されない
 if echo "\$output" | grep -q "STAGNATE-10"; then
@@ -235,7 +235,7 @@ EOF
 
 
 # ---------------------------------------------------------------------------
-# AC5: Wave 56+ で Worker auto-compaction 中の誤介入が発生しないことを確認
+# AC5: auto-compaction 中の誤介入が発生しないことを確認
 # AC1+AC2 組み合わせ統合確認
 # RED: COMPACTION-DETECTED イベントが実装されていない
 # ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ EOF
     # 実装後: Compacting/Snapshotting/Externalizing/Restoring/Summarizing のいずれかを
     #         pane で検知した場合に [COMPACTION-DETECTED] を emit する
     run bash <<EOF
-win="ap-test-win-1475-ac5"
+win="wt-test-win-1475-ac5"
 capture="Snapshotting…"
 export win capture
 
@@ -275,7 +275,7 @@ export -f tmux
 
 output=\$(_TEST_MODE=1 CLD_OBSERVE_ANY_SCRIPT_DIR="$script_dir" \
     bash "$cld_observe_any" --window "\$win" --once \
-    --complete-regex "PHASE_COMPLETE" --stagnate-sec 10 2>/dev/null)
+    --complete-regex "COMPLETE_MARKER" --stagnate-sec 10 2>/dev/null)
 echo "\$output"
 # 実装後: COMPACTION-DETECTED が含まれること
 echo "\$output" | grep -q "COMPACTION-DETECTED"

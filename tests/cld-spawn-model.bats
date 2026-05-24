@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # cld-spawn-model.bats - --model オプションの unit tests
 #
-# Spec: deltaspec/changes/issue-575/specs/model-propagation/spec.md
+# --model オプション伝播のテスト
 #
 # Scenarios covered:
 #   - --model オプションを指定: 生成された LAUNCHER に `cld --model sonnet` が含まれる
@@ -103,7 +103,7 @@ CLD_STUB
 
     # HOME を SANDBOX 内に設定（state ディレクトリ作成を安全に）
     export HOME="$SANDBOX/home"
-    mkdir -p "$HOME/.local/state/twl"
+    mkdir -p "$HOME/.local/state/claude-session"
 
     # TMUX 環境変数: cld-spawn の tmux チェックをパスさせる
     export TMUX="fake-tmux-socket,12345,0"

@@ -70,7 +70,7 @@ teardown() {
 # ===========================================================================
 
 @test "session-comm-script-dir[security][functional]: 存在しないディレクトリでは default SCRIPT_DIR にfallback" {
-    local fake_dir="/tmp/twl-test-1048-nonexistent-$$-deliberate"
+    local fake_dir="/tmp/session-test-1048-nonexistent-$$-deliberate"
     rm -rf "$fake_dir" 2>/dev/null || true
 
     # session-comm.sh の SCRIPT_DIR 設定部分を抽出 (15-24 行目程度)

@@ -1,12 +1,15 @@
 # cc-session
 
-汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / observe / fork** と状態検出を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
+汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / observe / fork** と状態検出、および **ready-compaction**（compaction 知識外部化）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
 ## 構成
 
-- `skills/` — `spawn` / `observe` / `fork` スキル（`/session:spawn` 等で起動）
+- `skills/` — `spawn` / `observe` / `fork` / `ready-compaction` スキル（`/session:spawn` 等で起動）
 - `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `cld-observe`, `cld-observe-loop`, `cld-observe-any`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）
+- `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）
 - `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `tmux-resolve.sh`, `path-validate.sh`, `llm-indicators.sh`）
+- `hooks/hooks.json` — フック登録（PreCompact / PostCompact / SessionStart:compact、自動検出）
+- `architecture/` — 設計ドキュメント（`compaction-memory-model.md`, `window-manifest-v1.schema.json` 等）
 - `tests/` — bats テスト
 
 ## namespace / 環境変数
@@ -20,6 +23,16 @@
 | `WINDOW_MANIFEST_FILE` | `$SESSION_SHARE_DIR/window-manifest.json` |
 | `SESSION_LOCK_FILE` | `$SESSION_STATE_DIR/window-create.lock` |
 | `SESSION_MAP_DIR` | `$SESSION_STATE_DIR` |
+
+`ready-compaction` の Working Memory 系は会話/プロジェクト固有のため、既定で**プロジェクトローカル**（`$PWD` 基準）に置く:
+
+| 変数 | デフォルト |
+|---|---|
+| `WORKING_MEMORY_DIR` | `$PWD/.claude-session` |
+| `WORKING_MEMORY_FILE` | `$WORKING_MEMORY_DIR/working-memory.md` |
+| `WORKING_MEMORY_CONSUMED_FILE` | `$WORKING_MEMORY_DIR/working-memory.consumed.md` |
+| `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled`（フック発火の opt-in マーカー）|
+| `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt` |
 
 ## tmux Window 命名規則
 

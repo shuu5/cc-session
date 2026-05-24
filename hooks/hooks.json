@@ -1,0 +1,39 @@
+{
+  "_comment": "ready-compaction: compaction を生き延びる三層記憶ライフサイクル。PreCompact=Working Memory 退避, PostCompact=復元+consumed, SessionStart(compact)=ambient hints。全フックは $WORKING_MEMORY_DIR/.compaction-enabled マーカーがあるプロジェクトでのみ動作する（opt-in）。マーカーは /session:ready-compaction 初回実行時に自動作成される。",
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.sh",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-compact.sh",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start-compact.sh",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,5 +1,5 @@
 {
   "name": "session",
   "version": "1.0.0",
-  "description": "汎用 Claude Code セッション管理プラグイン（spawn/observe/fork）"
+  "description": "汎用 Claude Code セッション管理プラグイン（spawn/observe/fork/ready-compaction）"
 }

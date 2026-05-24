@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# cld-observe-any-launcher — option B: flock + nohup による daemon 自律再起動管理
+# Issue #1146: feat(observer): self-monitoring daemon
+#
+# Usage:
+#   cld-observe-any-launcher [OPTIONS] [-- cld-observe-any-args...]
+#
+# Options:
+#   --dry-run                   実際に daemon を起動しない（テスト用）
+#   --simulate-daemon-death     daemon-down event を出力して終了（テスト用）
+#   --simulate-startup-failure  daemon-startup-failed event を出力して終了（テスト用）
+#   --supervisor-dir <path>     .supervisor/ ディレクトリの場所
+#
+# Environment:
+#   CLD_OBSERVE_ANY_LOCK         ロックファイルパス（default: /tmp/cld-observe-any.lock）
+#   CLD_OBSERVE_ANY_LOG          ログファイルパス（default: /tmp/cld-observe-any.log）
+#   CLD_OBSERVE_ANY_EVENT_DIR    event 出力ディレクトリ
+#   CLD_OBSERVE_ANY_SUPERVISOR_DIR  .supervisor/ ディレクトリ
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLD_OBSERVE_BIN="${SCRIPT_DIR}/cld-observe-any"
+
+# shellcheck source=lib/path-validate.sh
+source "${SCRIPT_DIR}/lib/path-validate.sh"
+
+LOCK_FILE="${CLD_OBSERVE_ANY_LOCK:-/tmp/cld-observe-any.lock}"
+LOG_FILE="${CLD_OBSERVE_ANY_LOG:-/tmp/cld-observe-any.log}"
+EVENT_DIR="${CLD_OBSERVE_ANY_EVENT_DIR:-}"
+SUPERVISOR_DIR="${CLD_OBSERVE_ANY_SUPERVISOR_DIR:-}"
+
+DRY_RUN=false
+SIMULATE_DAEMON_DEATH=false
+SIMULATE_STARTUP_FAILURE=false
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true; shift ;;
+        --simulate-daemon-death) SIMULATE_DAEMON_DEATH=true; shift ;;
+        --simulate-startup-failure) SIMULATE_STARTUP_FAILURE=true; shift ;;
+        --supervisor-dir) SUPERVISOR_DIR="$2"; shift 2 ;;
+        --) shift; EXTRA_ARGS+=("$@"); break ;;
+        *) EXTRA_ARGS+=("$1"); shift ;;
+    esac
+done
+
+emit_event() {
+    local filename="$1" json="$2"
+    if [[ -n "${EVENT_DIR:-}" ]]; then
+        mkdir -p "$EVENT_DIR"
+        printf '%s\n' "$json" > "${EVENT_DIR}/${filename}"
+    fi
+}
+
+emit_daemon_down() {
+    local reason="$1" pid="${2:-$$}"
+    local ts; ts=$(date -u +%s)
+    emit_event "daemon-down-${ts}.json" \
+        "{\"event\":\"daemon-down\",\"reason\":\"${reason}\",\"ts\":${ts},\"pid\":${pid}}"
+}
+
+emit_startup_failed() {
+    local reason="$1"
+    local ts; ts=$(date -u +%s)
+    emit_event "daemon-startup-failed-${ts}.json" \
+        "{\"event\":\"daemon-startup-failed\",\"reason\":\"${reason}\",\"ts\":${ts}}"
+    echo "[cld-observe-any-launcher] 起動失敗: ${reason}" >&2
+}
+
+update_session_json() {
+    local pid="$1" started_at="$2" log_path="$3"
+    [[ -z "${SUPERVISOR_DIR:-}" ]] && return 0
+    local session_json="${SUPERVISOR_DIR}/session.json"
+    mkdir -p "$SUPERVISOR_DIR"
+    if [[ ! -f "$session_json" ]]; then
+        printf '{"cld_observe_any":{"pid":%s,"started_at":"%s","log_path":"%s"}}\n' \
+            "$pid" "$started_at" "$log_path" > "$session_json"
+    elif command -v jq >/dev/null 2>&1; then
+        local tmp; tmp=$(mktemp)
+        if jq --argjson pid "$pid" \
+              --arg started_at "$started_at" \
+              --arg log_path "$log_path" \
+              '.cld_observe_any = {"pid": $pid, "started_at": $started_at, "log_path": $log_path}' \
+              "$session_json" > "$tmp"; then
+            mv "$tmp" "$session_json"
+        else
+            rm -f "$tmp"
+        fi
+    fi
+}
+
+# SUPERVISOR_DIR パストラバーサル防御 (Issue #1165 AC5)
+if [[ -n "${SUPERVISOR_DIR:-}" ]]; then
+    _raw_supervisor_dir="${SUPERVISOR_DIR}"
+    if ! SUPERVISOR_DIR=$(validate_supervisor_dir "$SUPERVISOR_DIR"); then
+        echo "[cld-observe-any-launcher] Error: invalid --supervisor-dir: ${_raw_supervisor_dir}" >&2
+        exit 2
+    fi
+    unset _raw_supervisor_dir
+fi
+
+# テスト用シミュレーションモード
+if $SIMULATE_DAEMON_DEATH; then
+    emit_daemon_down "simulated-daemon-death" "$$"
+    exit 0
+fi
+
+if $SIMULATE_STARTUP_FAILURE; then
+    emit_startup_failed "simulated-startup-failure"
+    exit 1
+fi
+
+# flock で多重起動防止（dry-run を含む全モードで適用）
+(
+    flock -n 9 || exit 0  # ロック取得失敗 → 既に別インスタンスが起動中（サイレントスキップ）
+
+    if $DRY_RUN; then
+        update_session_json "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_FILE"
+        echo "launcher_invoked dry_run=true"
+        exit 0
+    fi
+
+    # 既存 daemon 確認（起動中なら何もしない）
+    # pgrep -f は引数を含むコマンドライン全体にマッチするため $ アンカーは使わない
+    if pgrep -f "cld-observe-any" >/dev/null 2>&1; then
+        exit 0
+    fi
+
+    # 前回の session.json から PID を読み出し、死亡確認 → daemon-down event 出力
+    if [[ -n "${SUPERVISOR_DIR:-}" ]]; then
+        local_session="${SUPERVISOR_DIR}/session.json"
+        if [[ -f "$local_session" ]] && command -v jq >/dev/null 2>&1; then
+            prev_pid=$(jq -r '.cld_observe_any.pid // empty' "$local_session" 2>/dev/null || true)
+            if [[ -n "$prev_pid" && "$prev_pid" != "0" ]]; then
+                if ! kill -0 "$prev_pid" 2>/dev/null; then
+                    emit_daemon_down "daemon not running on SessionStart" "$prev_pid"
+                fi
+            fi
+        fi
+    fi
+
+    # binary 存在確認
+    if [[ ! -x "$CLD_OBSERVE_BIN" ]]; then
+        emit_startup_failed "cld-observe-any binary not found: ${CLD_OBSERVE_BIN}"
+        exit 1
+    fi
+
+    # daemon 起動（nohup + background）
+    nohup "$CLD_OBSERVE_BIN" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG_FILE" 2>&1 &
+    DAEMON_PID=$!
+
+    # 起動直後の生存確認（1 秒待ち）
+    sleep 1
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+        emit_startup_failed "daemon exited immediately (pid=${DAEMON_PID})"
+        exit 1
+    fi
+
+    update_session_json "$DAEMON_PID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_FILE"
+    echo "[cld-observe-any-launcher] daemon 起動完了 (pid=${DAEMON_PID})"
+
+) 9>"$LOCK_FILE"

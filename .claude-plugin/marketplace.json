@@ -1,0 +1,13 @@
+{
+  "name": "cc-session",
+  "owner": {
+    "name": "shuu5"
+  },
+  "plugins": [
+    {
+      "name": "session",
+      "source": "./",
+      "description": "汎用 Claude Code セッション管理プラグイン（spawn/observe/fork）"
+    }
+  ]
+}

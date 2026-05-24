@@ -1,0 +1,221 @@
+#!/bin/bash
+# cld-spawn - Start a new Claude Code session in a new tmux window
+#
+# Usage:
+#   cld-spawn [--cd DIR] [--env-file PATH] [--window-name NAME] [--timeout N] [--model MODEL] [PROMPT]
+#
+# PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
+# これにより改行・特殊文字を含むプロンプトが安全に渡せる。
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# shellcheck source=./session-name.sh
+source "$SCRIPT_DIR/session-name.sh"
+# shellcheck source=./lib/session-env.sh
+source "$SCRIPT_DIR/lib/session-env.sh"
+
+# tmux check
+if [[ -z "${TMUX:-}" ]]; then
+    echo "Error: tmux内で実行してください" >&2
+    exit 1
+fi
+
+CWD="$(pwd)"
+CD_SPECIFIED=false
+ENV_FILE=""
+WINDOW_NAME=""
+FORCE_NEW=0
+WAIT_TIMEOUT=60
+CLD_MODEL=""
+
+# Parse options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cd)
+            [[ -z "${2:-}" ]] && { echo "Error: --cd にディレクトリを指定してください" >&2; exit 1; }
+            CWD="$2"
+            CD_SPECIFIED=true
+            shift 2
+            ;;
+        --env-file)
+            [[ -z "${2:-}" ]] && { echo "Error: --env-file にパスを指定してください" >&2; exit 1; }
+            ENV_FILE="$2"
+            shift 2
+            ;;
+        --window-name)
+            [[ -z "${2:-}" ]] && { echo "Error: --window-name に名前を指定してください" >&2; exit 1; }
+            WINDOW_NAME="$2"
+            shift 2
+            ;;
+        --force-new)
+            FORCE_NEW=1
+            shift
+            ;;
+        --timeout)
+            [[ -z "${2:-}" ]] && { echo "Error: --timeout に秒数を指定してください" >&2; exit 1; }
+            WAIT_TIMEOUT="$2"
+            if ! [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: --timeout には正の整数を指定してください" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --model)
+            [[ -z "${2:-}" ]] && { echo "Error: --model にモデル名を指定してください" >&2; exit 1; }
+            CLD_MODEL="$2"
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# --env-file 未指定時は CLD_ENV_FILE 環境変数、次に ~/.cld-env をデフォルトとして使用
+ENV_FILE="${ENV_FILE:-${CLD_ENV_FILE:-$HOME/.cld-env}}"
+# --env-file のチルダ展開（存在チェックは不要: 不在時は source が 2>/dev/null で無視）
+if [[ -n "$ENV_FILE" ]]; then
+    ENV_FILE="${ENV_FILE/#\~/$HOME}"
+fi
+
+# --cd 指定時のみチルダ展開・正規化・存在チェックを実行
+if $CD_SPECIFIED; then
+    CWD="${CWD/#\~/$HOME}"
+    CWD="$(realpath -m "$CWD")"
+    if [[ ! -d "$CWD" ]]; then
+        echo "Error: ディレクトリが存在しません: $CWD" >&2
+        exit 1
+    fi
+fi
+
+# ウィンドウ名: 未指定時は意味論的命名（失敗時は時刻ベースにフォールバック）
+if [[ -z "$WINDOW_NAME" ]]; then
+    if ! WINDOW_NAME=$(generate_window_name wt "$CWD" "$CWD" 2>/dev/null); then
+        WINDOW_NAME="wt-$(date +%H%M%S)-$$"
+    fi
+fi
+
+# 残りの引数をプロンプトとして結合
+PROMPT=""
+if [[ $# -gt 0 ]]; then
+    PROMPT="$*"
+fi
+
+# Build launcher script to avoid shell quoting issues with tmux
+# cld は引数なしで起動（プロンプトは後から inject-file で送達）
+LAUNCHER=$(mktemp /tmp/cld-spawn-XXXXXX.sh)
+chmod +x "$LAUNCHER"
+
+{
+    echo '#!/bin/bash'
+    if [[ -n "$ENV_FILE" ]]; then
+        echo "source $(printf '%q' "$ENV_FILE") 2>/dev/null || true"
+    fi
+    echo "cd $(printf '%q' "$CWD") || exit 1"
+    # CLD_PATH: テスト時のスタブ差し替え用（本番では未設定 → $SCRIPT_DIR/cld）
+    if [[ -n "${CLD_MODEL:-}" ]]; then
+        printf '%q --model %q\n' "${CLD_PATH:-$SCRIPT_DIR/cld}" "${CLD_MODEL}"
+    else
+        printf '%q\n' "${CLD_PATH:-$SCRIPT_DIR/cld}"
+    fi
+    # Keep window open on error for diagnosis
+    cat <<'TRAP'
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "=== claude exited with code $EXIT_CODE ==="
+    echo "Press Enter to close, or Ctrl-C to keep open."
+    read -r || sleep 60
+fi
+TRAP
+} > "$LAUNCHER"
+
+# 同一 canonical_context の既存 window 再利用（--force-new 未指定時）
+if [[ "$FORCE_NEW" -eq 0 ]]; then
+    _EXISTING=$(find_existing_window "$WINDOW_NAME")
+    if [[ -n "$_EXISTING" ]]; then
+        rm -f "$LAUNCHER"
+        tmux select-window -t "$_EXISTING"
+        echo "reusing existing window: $_EXISTING ($WINDOW_NAME)"
+        exit 0
+    fi
+fi
+
+# 排他ロックで TOCTOU を防止しつつ new-window を実行
+mkdir -p "$(dirname "$SESSION_LOCK_FILE")"
+exec 200>"$SESSION_LOCK_FILE"
+if ! flock -w 5 200; then
+    rm -f "$LAUNCHER"
+    echo "Error: ウィンドウ作成ロックを取得できませんでした" >&2
+    exit 1
+fi
+
+# ロック内で再チェック（競合プロセスが先に作成した可能性）
+if [[ "$FORCE_NEW" -eq 0 ]]; then
+    _EXISTING=$(find_existing_window "$WINDOW_NAME")
+    if [[ -n "$_EXISTING" ]]; then
+        exec 200>&-
+        rm -f "$LAUNCHER"
+        tmux select-window -t "$_EXISTING"
+        echo "reusing existing window: $_EXISTING ($WINDOW_NAME)"
+        exit 0
+    fi
+fi
+
+tmux new-window -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
+exec 200>&-  # ロック解放
+
+# Verify window was created
+sleep 0.5
+if ! tmux list-windows -F '#{window_name}' | grep -qF "$WINDOW_NAME"; then
+    rm -f "$LAUNCHER"
+    echo "Error: tmux window の作成に失敗しました" >&2
+    exit 1
+fi
+
+echo "spawned → tmux window '$WINDOW_NAME'"
+
+# --- window-manifest 書き出し (Phase 2 / #290) ---
+# shellcheck source=./window-manifest.sh
+source "$SCRIPT_DIR/window-manifest.sh" 2>/dev/null || true
+if declare -f manifest_append_entry > /dev/null 2>&1; then
+    _WM_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "main")
+    _WM_INDEX=$(tmux list-windows -F '#{window_name} #{window_index}' 2>/dev/null \
+        | awk -v n="$WINDOW_NAME" '$1==n {print $2; exit}')
+    manifest_append_entry "$WINDOW_NAME" "$_WM_SESSION" "${_WM_INDEX:-0}" \
+        "$CWD" "$CWD" "wt" 2>/dev/null || true
+    # kill / rename 時の tombstone hook
+    # WINDOW_NAME は generate_window_name が英数字・ハイフンのみで生成するため
+    # printf '%q' の出力にシングルクォートを破る文字は含まれない（安全）
+    _WM_SCRIPT=$(printf '%q' "$SCRIPT_DIR/window-manifest.sh")
+    _WM_WINNAME=$(printf '%q' "$WINDOW_NAME")
+    tmux set-hook -t "$WINDOW_NAME" pane-died \
+        "run-shell 'bash $_WM_SCRIPT tombstone $_WM_WINNAME'" 2>/dev/null || true
+    # rename 時は旧 window_name を tombstone にする
+    tmux set-hook -t "$WINDOW_NAME" window-renamed \
+        "run-shell 'bash $_WM_SCRIPT tombstone $_WM_WINNAME'" 2>/dev/null || true
+fi
+
+# プロンプトがなければここで終了（対話モード起動のみ）
+if [[ -z "$PROMPT" ]]; then
+    exit 0
+fi
+
+# --- inject-file --wait でプロンプトを送達（状態待機をアトミックに実行） ---
+
+# プロンプトを一時ファイルに書き出し
+PROMPT_FILE=$(mktemp /tmp/cld-spawn-prompt-XXXXXX.txt)
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
+
+# inject-file --wait で input-waiting 待機 + 送達をアトミックに実行
+"$SCRIPT_DIR/session-comm.sh" inject-file "$WINDOW_NAME" "$PROMPT_FILE" --wait "$WAIT_TIMEOUT"
+INJECT_EXIT=$?
+
+rm -f "$PROMPT_FILE"
+
+if [[ $INJECT_EXIT -ne 0 ]]; then
+    echo "Error: プロンプトの送達に失敗しました（${WAIT_TIMEOUT}秒でタイムアウト or 送信エラー）" >&2
+    exit 1
+fi
+
+echo "prompt injected → '$WINDOW_NAME'"

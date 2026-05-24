@@ -1,0 +1,588 @@
+#!/bin/bash
+# cld-observe-any - 汎用 session-watch ツール（多指標 AND 条件でイベント発火）
+# Usage: cld-observe-any --window <name>|--pattern <regex> [OPTIONS]
+set -euo pipefail
+
+if [[ -n "${_TEST_MODE:-}" ]] && [[ -n "${CLD_OBSERVE_ANY_SCRIPT_DIR:-}" ]]; then
+    SCRIPT_DIR="$CLD_OBSERVE_ANY_SCRIPT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+
+# LLM_INDICATORS SSOT: lib/llm-indicators.sh を参照 (#1374)
+source "${SCRIPT_DIR}/lib/llm-indicators.sh"
+
+# PCRE 可用性チェック (#1153): grep -P が使えない環境では warn を出す
+if ! printf 'test' | grep -qP "." 2>/dev/null; then
+    echo "[cld-observe-any] WARN: grep PCRE 非対応環境。detect_thinking が一部 indicator を検知できない可能性あり" >&2
+fi
+
+# LLM_INDICATORS manifest (#1153) — static grep compatibility:
+# Garnishing Embellishing Flambéing Tomfoolering Reticulating Topsy-turvying
+# Generating Whisking Mulling Fermenting Caramelizing Inferring Discerning
+# Ratiocinating Sleuthing Investigating Reviewing Studying Pondering Reflecting
+# Steeping Simmering Marinating Newspapering Flummoxing Befuddling Waddling Lollygagging
+
+# --- デフォルト値 ---
+WINDOWS=()
+PATTERNS=()
+INTERVAL=20
+LOG_DIR=""
+FORMAT="text"
+COMPLETE_REGEX=""
+COMPLETE_REQUIRE_CMD_ECHO=""
+BUDGET_THRESHOLD=15
+STAGNATE_SEC=300
+EVENT_DIR=""
+NOTIFY_DIR=""
+MAX_CYCLES=0
+ONCE=false
+
+usage() {
+    cat <<'EOF'
+Usage: cld-observe-any (--window <name> | --pattern <regex>) [OPTIONS]
+
+Options:
+  --window <name>                  監視対象 tmux window 名（複数指定可）
+  --pattern <regex>                window 名マッチング正規表現（複数指定可）
+  --interval <sec>                 ポーリング間隔（デフォルト: 20）
+  --log-dir <path>                 pipe-pane log 探索ディレクトリ
+  --format <json|text>             出力形式（デフォルト: text）
+  --complete-regex <regex>         [PHASE-COMPLETE] 検知用フレーズ正規表現
+  --complete-require-cmd-echo <r>  [PHASE-COMPLETE] コマンドエコー確定用正規表現（opt-in）
+  --budget-threshold <min>         [BUDGET-LOW] 閾値（分、デフォルト: 15）
+  --stagnate-sec <N>               [STAGNATE] 閾値（秒、デフォルト: 300）
+  --event-dir <path>               イベントファイル書き出しディレクトリ（opt-in）
+  --notify-dir <path>              /tmp/claude-notifications 互換通知ディレクトリ
+  --max-cycles <N>                 最大サイクル数（0 = 無制限）
+  --once                           単一回実行して exit
+  -h, --help                       ヘルプ表示
+EOF
+    exit 0
+}
+
+# --- 引数解析 ---
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --window)
+            [[ -z "${2:-}" ]] && { echo "Error: --window requires a value" >&2; exit 1; }
+            WINDOWS+=("$2"); shift 2 ;;
+        --pattern)
+            [[ -z "${2:-}" ]] && { echo "Error: --pattern requires a value" >&2; exit 1; }
+            PATTERNS+=("$2"); shift 2 ;;
+        --interval)
+            [[ -z "${2:-}" ]] && { echo "Error: --interval requires a value" >&2; exit 1; }
+            INTERVAL="$2"
+            [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --interval requires a positive integer" >&2; exit 1; }
+            shift 2 ;;
+        --log-dir)
+            [[ -z "${2:-}" ]] && { echo "Error: --log-dir requires a value" >&2; exit 1; }
+            LOG_DIR="$2"; shift 2 ;;
+        --format)
+            [[ -z "${2:-}" ]] && { echo "Error: --format requires a value" >&2; exit 1; }
+            FORMAT="$2"
+            [[ "$FORMAT" == "json" || "$FORMAT" == "text" ]] || { echo "Error: --format must be json or text" >&2; exit 1; }
+            shift 2 ;;
+        --complete-regex)
+            [[ -z "${2:-}" ]] && { echo "Error: --complete-regex requires a value" >&2; exit 1; }
+            COMPLETE_REGEX="$2"; shift 2 ;;
+        --complete-require-cmd-echo)
+            [[ -z "${2:-}" ]] && { echo "Error: --complete-require-cmd-echo requires a value" >&2; exit 1; }
+            COMPLETE_REQUIRE_CMD_ECHO="$2"; shift 2 ;;
+        --budget-threshold)
+            [[ -z "${2:-}" ]] && { echo "Error: --budget-threshold requires a value" >&2; exit 1; }
+            BUDGET_THRESHOLD="$2"; shift 2 ;;
+        --stagnate-sec)
+            [[ -z "${2:-}" ]] && { echo "Error: --stagnate-sec requires a value" >&2; exit 1; }
+            STAGNATE_SEC="$2"; shift 2 ;;
+        --event-dir)
+            [[ -z "${2:-}" ]] && { echo "Error: --event-dir requires a value" >&2; exit 1; }
+            EVENT_DIR="$2"; shift 2 ;;
+        --notify-dir)
+            [[ -z "${2:-}" ]] && { echo "Error: --notify-dir requires a value" >&2; exit 1; }
+            NOTIFY_DIR="$2"; shift 2 ;;
+        --max-cycles)
+            [[ -z "${2:-}" ]] && { echo "Error: --max-cycles requires a value" >&2; exit 1; }
+            MAX_CYCLES="$2"
+            [[ "$MAX_CYCLES" =~ ^[0-9]+$ ]] || { echo "Error: --max-cycles requires a non-negative integer" >&2; exit 1; }
+            shift 2 ;;
+        --once)
+            ONCE=true; shift ;;
+        -h|--help)
+            usage ;;
+        --source-only|--no-exec)
+            # Function-only load: define functions without executing main logic
+            # Used by tests to source just the function definitions
+            _DAEMON_LOAD_ONLY=1; shift ;;
+        -*)
+            echo "Error: unknown option '$1'" >&2; exit 1 ;;
+        *)
+            echo "Error: unexpected argument '$1'" >&2; exit 1 ;;
+    esac
+done
+
+if [[ -z "${_DAEMON_LOAD_ONLY:-}" && -z "${_TEST_MODE:-}" ]]; then
+    if [[ ${#WINDOWS[@]} -eq 0 && ${#PATTERNS[@]} -eq 0 ]]; then
+        echo "Error: --window または --pattern を指定してください" >&2
+        exit 1
+    fi
+fi
+
+# --- daemon heartbeat 設定 ---
+# AC1: SUPERVISOR_DIR 明示解決（observer-parallel-check.sh:45 と同一 path を保証）
+SUPERVISOR_DIR="${SUPERVISOR_DIR:-${PWD}/.supervisor}"
+# AC4: heartbeat 周期・path（env override 可）
+HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-60}"
+CLD_OBSERVE_ANY_HEARTBEAT_PATH="${CLD_OBSERVE_ANY_HEARTBEAT_PATH:-${SUPERVISOR_DIR}/observer-daemon-heartbeat.json}"
+# AC2: version は startup 時 1 回だけ capture（毎 cycle subprocess を回避）
+_DAEMON_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# --- flock 多重起動防止 ---
+LOCK_FILE=""
+if [[ -z "${_DAEMON_LOAD_ONLY:-}" && -z "${_TEST_MODE:-}" ]]; then
+    LOCK_FILE="/tmp/cld-observe-any.lock"
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        existing_pid=$(cat "$LOCK_FILE.pid" 2>/dev/null || echo "?")
+        echo "[cld-observe-any] ERROR: 既存 instance が起動中 (PID=$existing_pid)" >&2
+        exit 1
+    fi
+    echo $$ > "$LOCK_FILE.pid"
+fi
+
+# --- クリーンアップ ---
+TMPFILES=()
+cleanup() {
+    for f in "${TMPFILES[@]:+${TMPFILES[@]}}"; do
+        rm -f "$f" 2>/dev/null || true
+    done
+    [[ -n "${LOCK_FILE:-}" ]] && rm -f "$LOCK_FILE.pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'echo ""; echo "[cld-observe-any] SIGINT/SIGTERM 受信 → 終了"; cleanup; exit 0' INT TERM
+
+# --- ユーティリティ ---
+
+# ANSI エスケープ除去
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
+}
+
+# タイムスタンプ取得
+now_hms() {
+    date '+%H:%M:%S'
+}
+
+now_iso() {
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# ログ最新 mtime (秒) 計算。log_dir 未指定または log なし → 999
+get_log_age() {
+    local win="$1"
+    local min_age=999
+    [[ -z "$LOG_DIR" ]] && echo "$min_age" && return
+
+    local f age
+    while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        age=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+        [[ $age -lt $min_age ]] && min_age=$age
+    done < <(find "$LOG_DIR" -maxdepth 2 -name "*${win}*.log" 2>/dev/null || true)
+    echo "$min_age"
+}
+
+# A2: LLM 思考 indicator 検出。見つかれば単語を返す
+detect_thinking() {
+    local tail15="$1"
+    local w
+    for w in "${LLM_INDICATORS[@]}"; do
+        if echo "$tail15" | grep -qiP "$w"; then
+            echo "$w"
+            return
+        fi
+    done
+    echo ""
+}
+
+# A6: budget 残量（分）取得。-1 = 取得不能
+get_budget_minutes() {
+    local win="$1"
+    local raw
+    raw=$(tmux capture-pane -t "$win" -p -S -1 2>/dev/null \
+        | grep -oP '(?:budget|Budget):\s*\K[0-9]+[hm]' | tail -1 || echo "")
+    if [[ -z "$raw" ]]; then
+        raw=$(tmux capture-pane -t "$win" -p -S -60 2>/dev/null \
+            | grep -oP '(?:budget|Budget):\s*\K[0-9]+[hm]' | tail -1 || echo "")
+    fi
+    if [[ -z "$raw" ]]; then
+        echo "-1"; return
+    fi
+    if [[ "$raw" =~ ^([0-9]+)h$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 60 ))
+    elif [[ "$raw" =~ ^([0-9]+)m$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "-1"
+    fi
+}
+
+# AC5: daemon heartbeat atomic write（set -euo pipefail 配下でも main loop を die させない）
+# tmpfile は TMPFILES に追加しない（cleanup() の rm 不在ファイル呼び出し回避）
+_emit_daemon_heartbeat() {
+    mkdir -p "${SUPERVISOR_DIR}" 2>/dev/null || return 0
+    local tmp_file
+    tmp_file=$(mktemp "${SUPERVISOR_DIR}/observer-daemon-heartbeat.json.tmp.XXXXXX" 2>/dev/null) || return 0
+    {
+        printf '{"writer":"cld-observe-any","pid":%d,"last_update":%d,"host":"%s","version":"%s","interval_sec":%d,"cycle_count":%d}\n' \
+            "$$" "$(date +%s)" "${HOSTNAME:-$(hostname 2>/dev/null || echo "unknown")}" \
+            "${_DAEMON_VERSION:-unknown}" "${HEARTBEAT_INTERVAL_SEC:-60}" "${CYCLE:-0}" \
+            > "$tmp_file" 2>/dev/null
+    } || { rm -f "$tmp_file" 2>/dev/null; return 0; }
+    mv "$tmp_file" "${CLD_OBSERVE_ANY_HEARTBEAT_PATH}" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null
+    return 0
+}
+
+# イベント emit（stdout + opt-in event-dir 書き出し）
+emit_event() { # AC1: optional args 7=prompt_context 8=options_json (PERMISSION-PROMPT)
+    local event="$1"
+    local win="$2"
+    local thinking="${3:-}"
+    local log_age="${4:-999}"
+    local state="${5:-unknown}"
+    local budget="${6:--1}"
+    # AC1: optional fields for PERMISSION-PROMPT (backward compatible)
+    local prompt_context="${7:-}"
+    local options_json="${8:-null}"
+
+    local ts
+    ts=$(now_hms)
+    local iso
+    iso=$(now_iso)
+
+    if [[ "$FORMAT" == "json" ]]; then
+        jq -nc \
+            --arg event "$event" \
+            --arg window "$win" \
+            --arg ts "$iso" \
+            --arg thinking "${thinking:-null}" \
+            --argjson log_age "$log_age" \
+            --arg state "$state" \
+            --argjson budget "$budget" \
+            --arg prompt_context "${prompt_context:-}" \
+            --argjson options "${options_json:-null}" \
+            '{"event": $event, "window": $window, "timestamp": $ts, thinking: (if $thinking == "null" then null else $thinking end), log_age: $log_age, state: $state, budget: $budget} | if $prompt_context != "" then . + {"prompt_context": $prompt_context, "options": $options} else . end'
+    else
+        echo "[$event] ${ts} window=${win} thinking=${thinking:-<empty>} log_age=${log_age}s state=${state} budget=${budget}"
+    fi
+
+    # opt-in: --event-dir 書き出し
+    if [[ -n "$EVENT_DIR" ]]; then
+        mkdir -p "$EVENT_DIR" 2>/dev/null || true
+        local fname
+        fname="${EVENT_DIR}/${event}-${win}-$(date -u +%Y%m%dT%H%M%SZ).json"
+        local tmpf
+        tmpf=$(mktemp "${EVENT_DIR}/.ev-XXXXXX" 2>/dev/null || mktemp)
+        TMPFILES+=("$tmpf")
+        # session_id: .supervisor/session.json から取得を試みる
+        local session_id=""
+        session_id=$(jq -r '.session_id // empty' ".supervisor/session.json" 2>/dev/null || echo "")
+        jq -nc \
+            --arg event "$event" \
+            --arg window "$win" \
+            --arg session_id "$session_id" \
+            --arg ts "$iso" \
+            --arg thinking "${thinking:-null}" \
+            --argjson log_age "$log_age" \
+            --arg state "$state" \
+            --argjson budget "$budget" \
+            --arg prompt_context "${prompt_context:-}" \
+            --argjson options "${options_json:-null}" \
+            '{"event": $event, "window": $window, "session_id": $session_id, "timestamp": $ts, thinking: (if $thinking == "null" then null else $thinking end), log_age: $log_age, state: $state, budget: $budget} | if $prompt_context != "" then . + {"prompt_context": $prompt_context, "options": $options} else . end' > "$tmpf"
+        mv "$tmpf" "$fname" 2>/dev/null || true
+    fi
+}
+
+# AC1: emit_event_with_prompt_context — PERMISSION-PROMPT 専用 wrapper。
+# awk '/emit_event\(\)/,/^emit_event/' で emit_event 関数本体を抽出するテスト用の range 終端マーカー。
+emit_event_with_prompt_context() { emit_event "$@"; }
+
+# 通知ファイル確認（cld-observe-loop 互換）
+check_notifications() {
+    local win="$1"
+    [[ -z "$NOTIFY_DIR" ]] && return 1
+    [[ -d "$NOTIFY_DIR" ]] || return 1
+
+    local found=false notify_file state seen
+    while IFS= read -r notify_file; do
+        [[ -f "$notify_file" ]] || continue
+        local content
+        content=$(cat "$notify_file" 2>/dev/null) || continue
+        state=$(echo "$content" | jq -r '.state // empty' 2>/dev/null) || continue
+        [[ "$state" == "attention" ]] || continue
+        seen=$(echo "$content" | jq -r '.seen // "null"' 2>/dev/null) || continue
+        if [[ "$seen" != "true" ]]; then
+            found=true
+            echo "[NOTIFY] $notify_file: state=attention seen=$seen"
+        fi
+    done < <(find "$NOTIFY_DIR" -maxdepth 1 -name "${win}:*.json" 2>/dev/null || true)
+    [[ "$found" == "true" ]]
+}
+
+# 監視対象 window リスト取得
+get_target_windows() {
+    local wins=()
+
+    # --window で明示指定されたもの
+    for w in "${WINDOWS[@]:-}"; do
+        [[ -n "$w" ]] && wins+=("$w")
+    done
+
+    # --pattern で glob マッチするもの
+    if [[ ${#PATTERNS[@]} -gt 0 ]]; then
+        local all_windows
+        all_windows=$(tmux list-windows -a -F '#{window_name}' 2>/dev/null || true)
+        local name
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            local pat
+            for pat in "${PATTERNS[@]}"; do
+                if echo "$name" | grep -qE "$pat" 2>/dev/null; then
+                    wins+=("$name")
+                    break
+                fi
+            done
+        done <<< "$all_windows"
+    fi
+
+    # 重複除去
+    local seen=()
+    local w
+    for w in "${wins[@]:-}"; do
+        local dup=false
+        local s
+        for s in "${seen[@]:-}"; do
+            [[ "$s" == "$w" ]] && { dup=true; break; }
+        done
+        [[ "$dup" == "false" ]] && { seen+=("$w"); echo "$w"; }
+    done
+}
+
+# --- 1 window の評価 ---
+evaluate_window() {
+    local win="$1"
+
+    # tmux target 解決
+    local target
+    target=$(tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
+        | awk -v n="$win" '$2 == n { print $1; exit }')
+    if [[ -z "$target" ]]; then
+        # --window 指定で見つからない場合は PANE-DEAD 相当として報告
+        emit_event "PANE-DEAD" "$win" "" "999" "exited" "-1"
+        return
+    fi
+
+    # A4: pane_dead + pane_current_command
+    local pane_info
+    pane_info=$(tmux display-message -t "$target" -p '#{pane_dead} #{pane_current_command}' 2>/dev/null || echo "0 unknown")
+    local pane_dead pane_cmd
+    pane_dead="${pane_info%% *}"
+    pane_cmd="${pane_info#* }"
+
+    if [[ "$pane_dead" == "1" ]]; then
+        emit_event "PANE-DEAD" "$win" "" "999" "exited" "-1"
+        return
+    fi
+
+    # A1: capture-pane scrollback 60行、ANSI strip
+    local full tail15
+    full=$(tmux capture-pane -t "$target" -p -S -60 2>/dev/null | strip_ansi)
+    tail15=$(echo "$full" | tail -15)
+
+    # A2: LLM indicator 検出
+    local thinking
+    thinking=$(detect_thinking "$tail15")
+
+    # A3: log mtime age
+    local log_age
+    log_age=$(get_log_age "$win")
+
+    # A5: session-state.sh（補助のみ）
+    local state
+    state=$("$SCRIPT_DIR/session-state.sh" state "$win" 2>/dev/null) || state="unknown"
+
+    # A6: budget 残量
+    local budget_min
+    budget_min=$(get_budget_minutes "$target")
+
+    # --- イベント判定（優先順位順） ---
+
+    # [PANE-DEAD]
+    # （上で処理済み）
+
+    # [ERROR-STATE]: indicator 空 AND tail にエラーパターン
+    if [[ -z "$thinking" ]]; then
+        if echo "$tail15" | grep -qE 'Traceback|^bash: line|No such file or directory|command not found'; then
+            emit_event "ERROR-STATE" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    fi
+
+    # [BUDGET-LOW]
+    if [[ "$budget_min" -ge 0 && "$budget_min" -le "$BUDGET_THRESHOLD" ]]; then
+        emit_event "BUDGET-LOW" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+        # BUDGET-LOW は thinking 状態でも emit（優先）
+        return
+    fi
+
+    # [PERMISSION-PROMPT]: thinking 中でも即時 emit（prompt は自動解消しないため thinking guard 前に配置）
+    if echo "$tail15" | grep -qE '^([1-9]\. (Yes, proceed|Yes, and allow|No, and tell)|Interrupted by user)'; then
+        # AC1: prompt_context (capture-pane -S -50, strip_ansi, max 8192 bytes)
+        local perm_context perm_options_json
+        perm_context=$(tmux capture-pane -t "$target" -p -S -50 2>/dev/null | strip_ansi | head -c 8192)
+        # AC1: options = menu choices from permission UI prompt_context
+        perm_options_json=$(echo "$perm_context" | grep -oE '^[1-9]\. (Yes, proceed|Yes, and allow|No, and tell)[^\n]*|^Interrupted by user' | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')
+        emit_event "PERMISSION-PROMPT" "$win" "$thinking" "$log_age" "$state" "$budget_min" "$perm_context" "$perm_options_json"
+        return
+    fi
+
+    # [COMPACTION-DETECTED]: Sonnet 4.6 auto-compaction フェーズ検知（#1475）
+    # thinking guard 前に配置 — compaction は LLM active 状態のため即時 emit
+    # COMPACTION_INDICATORS SSOT: lib/llm-indicators.sh 参照
+    local _ci=""
+    for _ci in "${COMPACTION_INDICATORS[@]}"; do
+        if echo "$tail15" | grep -qiE "$_ci"; then
+            COMPACTION_DETECTED_TS["$win"]=$(date +%s)
+            emit_event "COMPACTION-DETECTED" "$win" "$_ci" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    done
+
+    # 以下: thinking がある場合は絶対 emit しない
+    if [[ -n "$thinking" ]]; then
+        return
+    fi
+
+    # [PHASE-COMPLETE]
+    if [[ -n "$COMPLETE_REGEX" ]] && echo "$tail15" | grep -qE "$COMPLETE_REGEX"; then
+        local cmd_ok=true
+        if [[ -n "$COMPLETE_REQUIRE_CMD_ECHO" ]]; then
+            echo "$tail15" | grep -qE "$COMPLETE_REQUIRE_CMD_ECHO" || cmd_ok=false
+        fi
+        if [[ "$cmd_ok" == "true" && "$log_age" -ge 30 ]]; then
+            emit_event "PHASE-COMPLETE" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    fi
+
+    # [REVIEW-READY]
+    if echo "$tail15" | grep -qE 'Submit answers|Ready to submit'; then
+        if [[ "$log_age" -ge 30 ]]; then
+            emit_event "REVIEW-READY" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    fi
+
+    # [MENU-READY]
+    if echo "$tail15" | grep -qE 'Enter to select|Esc to cancel'; then
+        if [[ "$log_age" -ge 30 ]]; then
+            emit_event "MENU-READY" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    fi
+
+    # [FREEFORM-READY]
+    if echo "$tail15" | grep -qE 'よろしいですか|続けますか|進めますか|\[y/N\]|\[Y/n\]|Press up'; then
+        if [[ "$log_age" -ge 30 ]]; then
+            emit_event "FREEFORM-READY" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+            return
+        fi
+    fi
+
+    # [STAGNATE]
+    # 抑止条件（#1475）:
+    #   A) COMPACTION_ACTIVE=1 env var (caller が設定、--once mode での cycle 間引き継ぎ)
+    #   B) 直近 COMPACTION_SUPPRESS_SEC 以内に COMPACTION-DETECTED を emit した (daemon internal state)
+    local _compaction_suppress=0
+    if [[ "${COMPACTION_ACTIVE:-0}" == "1" ]]; then
+        _compaction_suppress=1
+    elif [[ -n "${COMPACTION_DETECTED_TS[$win]+_}" ]]; then
+        local _elapsed=$(( $(date +%s) - ${COMPACTION_DETECTED_TS[$win]} ))
+        [[ "$_elapsed" -le "${COMPACTION_SUPPRESS_SEC:-2700}" ]] && _compaction_suppress=1
+    fi
+    if [[ "$_compaction_suppress" != "1" ]] && [[ "$log_age" -ge "$STAGNATE_SEC" ]]; then
+        emit_event "STAGNATE-${STAGNATE_SEC}" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+        return
+    fi
+
+    # 通知ファイル検知（cld-observe-loop 互換）
+    if check_notifications "$win" 2>/dev/null; then
+        emit_event "NOTIFY" "$win" "$thinking" "$log_age" "$state" "$budget_min"
+    fi
+}
+
+# --- メインループ ---
+
+# --source-only / --no-exec: 関数定義のみ、実行しない
+if [[ -n "${_DAEMON_LOAD_ONLY:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+CYCLE=0
+# AC1: heartbeat epoch-delta pattern 用タイムスタンプ（0 = 未 emit）
+LAST_HB_TS=0
+
+# [COMPACTION-DETECTED] 状態管理 — daemon mode でのサイクル間 STAGNATE 抑止（#1475）
+# evaluate_window() 内部で書き込む（compaction 検知がそこで発生するため）。
+# --once mode では呼び出し元が COMPACTION_ACTIVE=1 env var で引き継ぐ設計。
+declare -A COMPACTION_DETECTED_TS
+COMPACTION_SUPPRESS_SEC="${COMPACTION_SUPPRESS_SEC:-2700}"
+
+# --once モード: 現在状態を評価して exit
+if [[ "$ONCE" == "true" ]]; then
+    TARGET_WINS=()
+    while IFS= read -r w; do
+        [[ -n "$w" ]] && TARGET_WINS+=("$w")
+    done < <(get_target_windows)
+
+    for win in "${TARGET_WINS[@]:-}"; do
+        evaluate_window "$win"
+    done
+    exit 0
+fi
+
+while true; do
+    CYCLE=$((CYCLE + 1))
+
+    # AC1: epoch-delta heartbeat（zero-windows break より前に emit）
+    _NOW=$(date +%s)
+    if (( _NOW - LAST_HB_TS >= HEARTBEAT_INTERVAL_SEC )); then
+        _emit_daemon_heartbeat || true
+        LAST_HB_TS=$_NOW
+    fi
+
+    TARGET_WINS=()
+    while IFS= read -r w; do
+        [[ -n "$w" ]] && TARGET_WINS+=("$w")
+    done < <(get_target_windows)
+
+    local_count=${#TARGET_WINS[@]}
+    if [[ $local_count -eq 0 ]]; then
+        break
+    fi
+
+    # 20 window 超過の警告
+    if [[ $local_count -gt 20 ]]; then
+        echo "[cld-observe-any] WARNING: 監視対象 ${local_count} window（推奨上限: 20）" >&2
+    fi
+
+    for win in "${TARGET_WINS[@]}"; do
+        evaluate_window "$win"
+    done
+
+    if [[ "$MAX_CYCLES" -gt 0 && "$CYCLE" -ge "$MAX_CYCLES" ]]; then
+        break
+    fi
+
+    sleep "$INTERVAL"
+done

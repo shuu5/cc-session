@@ -1,0 +1,104 @@
+#!/bin/bash
+# cld-observe - Capture and report tmux pane content
+# Usage: cld-observe <window-or-pane> [--lines N] [--all]
+set -euo pipefail
+
+# テスト時のみ CLD_OBSERVE_SCRIPT_DIR を許可（_TEST_MODE ガード必須）
+if [[ -n "${_TEST_MODE:-}" ]] && [[ -n "${CLD_OBSERVE_SCRIPT_DIR:-}" ]]; then
+    SCRIPT_DIR="$CLD_OBSERVE_SCRIPT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+DEFAULT_LINES=30
+
+# --- 引数解析 ---
+TARGET=""
+LINES=$DEFAULT_LINES
+LINES_SET=false
+ALL=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --lines)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --lines requires a value" >&2
+                exit 1
+            fi
+            LINES="$2"
+            LINES_SET=true
+            if ! [[ "$LINES" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: --lines requires a positive integer" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --all)
+            ALL=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: cld-observe <window-or-pane> [--lines N] [--all]"
+            exit 0
+            ;;
+        -*)
+            echo "Error: unknown option '$1'" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$TARGET" ]]; then
+                TARGET="$1"
+            else
+                echo "Error: unexpected argument '$1'" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$TARGET" ]]; then
+    echo "Error: ウィンドウ/ペイン名を指定してください" >&2
+    echo "Usage: cld-observe <window-or-pane> [--lines N] [--all]" >&2
+    exit 1
+fi
+
+# --all と --lines は排他
+if $ALL && $LINES_SET; then
+    echo "Error: --all and --lines are mutually exclusive" >&2
+    exit 1
+fi
+
+# --- キャプチャ（session-comm.sh に委譲、stderr を分離） ---
+if $ALL; then
+    CAPTURE_ARGS="--all"
+else
+    CAPTURE_ARGS="--lines $LINES"
+fi
+
+CAPTURE_ERRFILE=$(mktemp /tmp/cld-observe-err-XXXXXX)
+trap 'rm -f "$CAPTURE_ERRFILE"' EXIT
+OUTPUT=$("$SCRIPT_DIR/session-comm.sh" capture "$TARGET" $CAPTURE_ARGS 2>"$CAPTURE_ERRFILE") || {
+    CAPTURE_ERR=$(cat "$CAPTURE_ERRFILE" 2>/dev/null)
+    echo "${CAPTURE_ERR:-Error: ターゲット '$TARGET' のキャプチャに失敗しました}" >&2
+    exit 1
+}
+
+# --- Claude Code 判定（session-state.sh に委譲、resolve_target ロジックを共有） ---
+STATE=$("$SCRIPT_DIR/session-state.sh" state "$TARGET" 2>/dev/null || echo "")
+
+case "$STATE" in
+    idle)
+        # pane_current_command != "claude" → 一般シェルペイン
+        PANE_CMD=$(tmux display-message -t "$TARGET" -p '#{pane_current_command}' 2>/dev/null || echo "unknown")
+        echo "=== Shell pane: $TARGET (command: $PANE_CMD) ==="
+        ;;
+    "")
+        # session-state.sh がエラー → ターゲット不明
+        echo "=== Shell pane: $TARGET (command: unknown) ==="
+        ;;
+    *)
+        # input-waiting/processing/error/exited → Claude Code セッション
+        echo "=== Claude Code session: $TARGET (state: $STATE) ==="
+        ;;
+esac
+echo "$OUTPUT"

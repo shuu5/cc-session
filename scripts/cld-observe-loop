@@ -1,0 +1,97 @@
+#!/bin/bash
+# cld-observe-loop - cld-observe-any の thin wrapper（後方互換 API を維持）
+# Usage: cld-observe-loop [TARGET|--pattern GLOB] [--interval SECONDS] [--max-cycles N] [--notify-dir DIR]
+set -euo pipefail
+
+if [[ -n "${_TEST_MODE:-}" ]] && [[ -n "${CLD_OBSERVE_LOOP_SCRIPT_DIR:-}" ]]; then
+    SCRIPT_DIR="$CLD_OBSERVE_LOOP_SCRIPT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+
+DEFAULT_INTERVAL=300
+DEFAULT_MAX_CYCLES=0
+DEFAULT_NOTIFY_DIR="/tmp/claude-notifications"
+
+TARGET=""
+PATTERN=""
+INTERVAL=$DEFAULT_INTERVAL
+MAX_CYCLES=$DEFAULT_MAX_CYCLES
+NOTIFY_DIR=$DEFAULT_NOTIFY_DIR
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pattern)
+            [[ -z "${2:-}" ]] && { echo "Error: --pattern requires a value" >&2; exit 1; }
+            PATTERN="$2"; shift 2 ;;
+        --interval)
+            [[ -z "${2:-}" ]] && { echo "Error: --interval requires a value" >&2; exit 1; }
+            INTERVAL="$2"
+            [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --interval requires a positive integer" >&2; exit 1; }
+            shift 2 ;;
+        --max-cycles)
+            [[ -z "${2:-}" ]] && { echo "Error: --max-cycles requires a value" >&2; exit 1; }
+            MAX_CYCLES="$2"
+            [[ "$MAX_CYCLES" =~ ^[0-9]+$ ]] || { echo "Error: --max-cycles requires a non-negative integer" >&2; exit 1; }
+            shift 2 ;;
+        --notify-dir)
+            [[ -z "${2:-}" ]] && { echo "Error: --notify-dir requires a value" >&2; exit 1; }
+            NOTIFY_DIR="$2"; shift 2 ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: cld-observe-loop [TARGET|--pattern GLOB] [--interval SECONDS] [--max-cycles N] [--notify-dir DIR]
+
+Options:
+  TARGET          単一ウィンドウ名（--pattern と排他）
+  --pattern GLOB  window_name フィールドに対して bash glob でフィルタ（毎サイクル再検出）
+  --interval N    ポーリング間隔（秒、デフォルト: 300）
+  --max-cycles N  最大サイクル数（0 = 無制限、デフォルト: 0）
+  --notify-dir D  通知ファイルディレクトリ（デフォルト: /tmp/claude-notifications）
+EOF
+            exit 0 ;;
+        -*)
+            echo "Error: unknown option '$1'" >&2; exit 1 ;;
+        *)
+            if [[ -z "$TARGET" ]]; then
+                TARGET="$1"; shift
+            else
+                echo "Error: unexpected argument '$1'" >&2; exit 1
+            fi ;;
+    esac
+done
+
+if [[ -n "$TARGET" ]] && [[ -n "$PATTERN" ]]; then
+    echo "Error: TARGET と --pattern は同時に指定できません" >&2
+    exit 1
+fi
+
+if [[ -z "$TARGET" ]] && [[ -z "$PATTERN" ]]; then
+    echo "Error: TARGET または --pattern を指定してください" >&2
+    echo "Usage: cld-observe-loop [TARGET|--pattern GLOB] [--interval SECONDS] [--max-cycles N] [--notify-dir DIR]" >&2
+    exit 1
+fi
+
+# glob pattern を正規表現に変換（* → .*, ? → .）
+glob_to_regex() {
+    local pat="$1"
+    # 特殊文字をエスケープ後に * → .*, ? → . 変換
+    local escaped
+    escaped=$(printf '%s' "${pat//\*/GLOB_STAR}" \
+        | sed 's/[.+()[\]{}^$|\\]/\\&/g; s/GLOB_STAR/.*/g; s/?/./g')
+    echo "^${escaped}$"
+}
+
+# cld-observe-any に転送
+ARGS=()
+if [[ -n "$TARGET" ]]; then
+    ARGS+=(--window "$TARGET")
+else
+    REGEX=$(glob_to_regex "$PATTERN")
+    ARGS+=(--pattern "$REGEX")
+fi
+
+ARGS+=(--interval "$INTERVAL" --max-cycles "$MAX_CYCLES")
+ARGS+=(--notify-dir "$NOTIFY_DIR")
+ARGS+=(--complete-regex "PHASE_COMPLETE" --stagnate-sec 600)
+
+exec "$SCRIPT_DIR/cld-observe-any" "${ARGS[@]}"

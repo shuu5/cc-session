@@ -1,0 +1,45 @@
+#!/bin/bash
+# cld - Claude Code launcher with auto plugin discovery
+#
+# ~/.claude/plugins/ 配下の plugin を自動検出して claude に渡し起動する汎用ランチャー。
+# systemd-run が利用可能ならメモリ制限付き user scope で、なければ直接起動する。
+set -euo pipefail
+
+if ! command -v claude &>/dev/null; then
+    echo "Error: claude が見つかりません（npm install -g @anthropic-ai/claude-code）" >&2
+    exit 1
+fi
+
+PASS_ARGS=("$@")
+
+# ~/.claude/plugins/*/ を自動検出して --plugin-dir で渡す
+PLUGINS_BASE="$HOME/.claude/plugins"
+PLUGIN_ARGS=()
+if [[ -d "$PLUGINS_BASE" ]]; then
+    for dir in "$PLUGINS_BASE"/*/; do
+        if [[ -f "${dir}.claude-plugin/plugin.json" ]]; then
+            PLUGIN_ARGS+=(--plugin-dir "$dir")
+        fi
+    done
+fi
+
+# DEV_ prefix の環境変数を systemd scope 内へ伝播（systemd-run 使用時のみ）
+ENV_ARGS=()
+while IFS= read -r line; do
+    key="${line%%=*}"
+    val="${line#*=}"
+    ENV_ARGS+=(--setenv="${key}=${val}")
+done < <(env | grep '^DEV_' || true)
+
+# systemd-run があればメモリ制限付き scope で、なければ直接起動（環境変数は exec で継承）
+if command -v systemd-run &>/dev/null; then
+    exec systemd-run --user --scope -p "MemoryMax=${CLD_MEMORY_MAX:-12G}" \
+        "${ENV_ARGS[@]+"${ENV_ARGS[@]}"}" \
+        claude --dangerously-skip-permissions \
+        "${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"}" \
+        "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"
+else
+    exec claude --dangerously-skip-permissions \
+        "${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"}" \
+        "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"
+fi

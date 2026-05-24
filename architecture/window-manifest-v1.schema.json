@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "window-manifest-v1",
+  "title": "Window Manifest v1",
+  "description": "tmux window の生成・状態を記録するマニフェスト。producer (session plugin) が書き、consumer (ubuntu-note-system) が読む。",
+  "type": "object",
+  "required": ["schema_version", "entries"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "スキーマバージョン。不一致時は producer が write を拒否する。"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Entry"
+      }
+    }
+  },
+  "definitions": {
+    "Entry": {
+      "type": "object",
+      "required": ["window_name", "session", "index", "worktree_path", "cwd", "prefix", "created_at", "tombstone"],
+      "additionalProperties": true,
+      "description": "1 tmux window のスナップショット。tombstone=true は削除/リネーム済みを示す。unknown fields は無視して警告のみ。",
+      "properties": {
+        "window_name": {
+          "type": "string",
+          "description": "tmux window 名（意味論的命名、例: wt-twill-feat-290-i290-a1b2c3d4）"
+        },
+        "session": {
+          "type": "string",
+          "description": "tmux セッション名"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "tmux window インデックス"
+        },
+        "worktree_path": {
+          "type": "string",
+          "description": "git worktree の絶対パス"
+        },
+        "cwd": {
+          "type": "string",
+          "description": "window 起動時の作業ディレクトリ（絶対パス）"
+        },
+        "prefix": {
+          "type": "string",
+          "enum": ["wt", "fk", "ap"],
+          "description": "window 種別プレフィックス: wt=spawn, fk=fork, ap=autopilot"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "エントリ作成時刻（ISO 8601 UTC）"
+        },
+        "tombstone": {
+          "type": "boolean",
+          "description": "true = window が kill/rename 済み（GC 対象）"
+        }
+      }
+    }
+  }
+}

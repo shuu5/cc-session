@@ -49,8 +49,8 @@
         },
         "prefix": {
           "type": "string",
-          "enum": ["wt", "fk", "ap"],
-          "description": "window 種別プレフィックス: wt=spawn, fk=fork, ap=autopilot"
+          "enum": ["wt", "fk"],
+          "description": "window 種別プレフィックス: wt=spawn, fk=fork"
         },
         "created_at": {
           "type": "string",

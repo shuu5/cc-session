@@ -286,7 +286,7 @@ emit_event() { # AC1: optional args 7=prompt_context 8=options_json (PERMISSION-
         TMPFILES+=("$tmpf")
         # session_id: .supervisor/session.json から取得を試みる
         local session_id=""
-        session_id=$(jq -r '.session_id // empty' ".supervisor/session.json" 2>/dev/null || echo "")
+        session_id=$(jq -r '.session_id // empty' "${SUPERVISOR_DIR}/session.json" 2>/dev/null || echo "")
         jq -nc \
             --arg event "$event" \
             --arg window "$win" \

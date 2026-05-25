@@ -14,7 +14,7 @@ description: |
 # Spawn Skill
 
 新しい tmux ウィンドウで cld を起動し、指定プロンプトを初期入力として実行する。
-`--worktree` オプションで独立した git worktree を作成し、その中でセッションを起動できる。
+`--worktree` オプションで独立した git worktree を `.worktrees/`（隠しディレクトリ、`.gitignore` に自動追記）に作成し、その中でセッションを起動できる。
 会話コンテキストは引き継がない（`/fork` との違い）。
 
 ## Dynamic Context Injection
@@ -78,11 +78,16 @@ description: |
    2. **ブランチ名・worktree パス生成**:
       ```bash
       BRANCH_NAME="spawn/$(date +%H%M%S)"
-      WORKTREE_DIR="$PROJECT_DIR/worktrees/$BRANCH_NAME"
+      WORKTREE_DIR="$PROJECT_DIR/.worktrees/$BRANCH_NAME"
       ```
 
-   3. **worktree 作成**:
+   3. **`.gitignore` 冪等追記 → worktree 作成**:
       ```bash
+      # 対象リポジトリの .gitignore に .worktrees/ を冪等追記（git 汚染防止）
+      GI="$PROJECT_DIR/.gitignore"
+      if ! { [ -f "$GI" ] && grep -qxF '.worktrees/' "$GI"; }; then
+          printf '%s\n' '.worktrees/' >> "$GI"
+      fi
       mkdir -p "$(dirname "$WORKTREE_DIR")"
       git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" main
       ```
@@ -178,5 +183,6 @@ description: |
 - cd なしの場合、作業ディレクトリは呼び出し元の `pwd` が引き継がれる
 - セッションスコープの権限は引き継がれない
 - 完了監視はデフォルト ON（不要なら「投げっぱなし」「監視不要」）。タイムアウトはデフォルト300秒。長時間・常駐監視はこのプラグインの範囲外
+- `--worktree` の worktree は対象リポジトリの `.worktrees/` に作成し、`.gitignore` に自動追記する（git 汚染防止）
 - `--worktree` で作成した worktree は手動管理（自動削除しない）。不要時は `worktree-delete` で削除
 - `--worktree` は git リポジトリ内でのみ使用可能（bare repo 構造を前提）

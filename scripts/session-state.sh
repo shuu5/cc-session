@@ -11,11 +11,22 @@
 # =============================================================================
 set -euo pipefail
 
+# LLM thinking / compaction インジケータ SSOT（COMPACTION_INDICATORS / 進行形判定に使用）
+# cld-observe-any と判定語彙を共有する
+_SS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/llm-indicators.sh
+source "$_SS_LIB_DIR/llm-indicators.sh"
+
 # =============================================================================
 # パターン定義（Claude Code UI変更時はここを更新）
 # =============================================================================
 # プロンプト: 入力待ちを示す末尾パターン
 PROMPT_PATTERN='❯[[:space:]]'
+# 処理中(thinking)進行形: 動名詞(ing/in') + 進行サフィックス(…/.../(N/ for N)。
+# Claude Code は thinking 中も ❯ 入力欄と "bypass permissions" ステータスを表示するため、
+# 進行形インジケータを input-waiting 判定より先に評価して #708 false positive を防ぐ。
+# 過去形(例 "Baked for 8m" = 完了表示)は (in'|ing) に一致しないため processing 扱いされない。
+THINKING_PROGRESS_PATTERN='[\p{Lu}][\p{Ll}]+(in'"'"'|ing)(…|\.{3}| for [0-9]| \([0-9])'
 # approval UI / AskUserQuestion パターン（tail -5 全体スキャン対象）
 INPUT_WAITING_PATTERNS=(
     'Enter to select'        # Claude Code 選択 UI
@@ -163,6 +174,24 @@ detect_state() {
     # 末尾の空行を除去して最後の非空行を取得
     local last_lines
     last_lines=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -5)
+    # thinking インジケータは入力ボックス(❯/区切り線/ステータスバー)の上に出るため、
+    # tail -5 では捉えきれない。進行形/compaction 判定には少し広い tail -8 を使う。
+    local thinking_scan
+    thinking_scan=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -8)
+
+    # processing 最優先判定: thinking 進行形 / compaction フェーズが見えたら、
+    # ❯ や bypass permissions(常時表示)より先に processing を確定する(#708 false positive 対策)
+    if echo "$thinking_scan" | grep -qP "$THINKING_PROGRESS_PATTERN"; then
+        echo "processing"
+        return
+    fi
+    local _ci
+    for _ci in "${COMPACTION_INDICATORS[@]}"; do
+        if echo "$thinking_scan" | grep -qiF "$_ci"; then
+            echo "processing"
+            return
+        fi
+    done
 
     # input-waiting: プロンプトパターンが last_lines のいずれかの行にある
     # Claude Code TUI は capture-pane で UTF-8 バイト列を返すため、

@@ -189,3 +189,45 @@ esc to interrupt"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "input-waiting" ]]
 }
+
+# ---------------------------------------------------------------------------
+# Issue #708 拡張: thinking 進行形が ❯ / bypass と共存しても processing
+# Opus 4.7 は thinking 中に「動名詞インジケータ + ❯ 入力欄 + bypass ステータスバー」を
+# 同時表示する。進行形インジケータは入力ボックスの上に出るため tail -8 で捕捉する。
+# (実セッションの fork 検証で観測した false positive の回帰テスト)
+# ---------------------------------------------------------------------------
+@test "detect_state: thinking 進行形 (Incubating…) + ❯ + bypass 同時 → processing (#708 誤検出回帰)" {
+    run_detect_state_with_capture \
+"✶ Incubating… (6m 12s · ↓ 25.5k tokens · almost done thinking with max effort)
+──────────────────────────────
+❯
+──────────────────────────────
+  shuu5@host 10% 100k/1M Opus 4.7 [max]
+  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}
+
+@test "detect_state: completion 表示 (Baked for 8m) + ❯ → input-waiting (過去形は thinking 扱いしない)" {
+    run_detect_state_with_capture \
+"✻ Baked for 8m 25s
+──────────────────────────────
+❯
+──────────────────────────────
+  shuu5@host 0% 0/1M Opus 4.7 [max]
+  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "input-waiting" ]]
+}
+
+@test "detect_state: compaction 中 (Compacting) + ❯ → processing" {
+    run_detect_state_with_capture \
+"✽ Compacting conversation… (51s)
+──────────────────────────────
+❯
+──────────────────────────────
+  shuu5@host 0% 0/1M Opus 4.7 [max]
+  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}

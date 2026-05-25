@@ -1,15 +1,16 @@
 # cc-session
 
-汎用 Claude Code セッション管理プラグイン。tmux ウィンドウ上の Claude Code セッションを **spawn / observe / fork** し、状態を検出する。
+汎用 Claude Code セッション管理プラグイン。tmux ウィンドウ上の Claude Code セッションを **spawn / fork** し、状態を検出する。
 
 ## 機能
 
 | スキル | 説明 |
 |--------|------|
-| `/session:spawn` | 新しい tmux ウィンドウで Claude Code を起動（コンテキスト非継承、`--worktree` 対応） |
-| `/session:observe` | tmux ウィンドウ/ペインの出力をキャプチャし AI 要約（`--loop` で定期監視） |
-| `/session:fork` | 現在のセッションを fork（会話履歴を継承して並行実行） |
+| `/session:spawn` | 新しい tmux ウィンドウで Claude Code を起動（コンテキスト非継承、`--worktree` 対応）。完了監視はデフォルト ON |
+| `/session:fork` | 現在のセッションを fork（会話履歴を継承して並行実行）。完了監視はデフォルト ON |
 | `/session:ready-compaction` | `/compact` 前に作業状態を外部化し、フックで圧縮後に自動復元（opt-in） |
+
+spawn/fork は起動後、spawn 元セッションが Claude Code の Monitor / `run_in_background` で完了を監視し報告する（「投げっぱなし」で省略、「監視して」で途中経過も報告）。長時間・常駐の監視やマルチウィンドウ統括はこのプラグインの範囲外。
 
 ## インストール
 
@@ -43,32 +44,13 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 
 設計詳細は `architecture/compaction-memory-model.md` を参照。
 
-## 高度な使い方: observe daemon の自律再起動
-
-`cld-observe-any-launcher` を SessionStart hook から呼ぶと、observer セッションの crash 後に自動再起動できる（`EVENT_DIR` で event ファイル出力先を指定）。
-
-```jsonc
-// ~/.claude/settings.json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "pgrep -f 'cld-observe-any$' >/dev/null 2>&1 || bash <plugin-dir>/scripts/cld-observe-any-launcher --window <監視ウィンドウ名>"
-      }]
-    }]
-  }
-}
-```
-
 ## セキュリティ注記
 
 `cld` / `cld-spawn` で起動するセッションは自動実行を前提に `claude --dangerously-skip-permissions` で起動する。信頼できる環境でのみ使用すること。
 
 ## テスト
 
-```bash
+```
 bats tests/
 ```
 

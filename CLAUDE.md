@@ -1,13 +1,13 @@
 # cc-session
 
-汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / observe / fork** と状態検出、および **ready-compaction**（compaction 知識外部化）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
+汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、および **ready-compaction**（compaction 知識外部化）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
 ## 構成
 
-- `skills/` — `spawn` / `observe` / `fork` / `ready-compaction` スキル（`/session:spawn` 等で起動）
-- `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `cld-observe`, `cld-observe-loop`, `cld-observe-any`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）
+- `skills/` — `spawn` / `fork` / `ready-compaction` スキル（`/session:spawn` 等で起動）
+- `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）
 - `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）
-- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `tmux-resolve.sh`, `path-validate.sh`, `llm-indicators.sh`）
+- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`）
 - `hooks/hooks.json` — フック登録（PreCompact / PostCompact / SessionStart:compact、自動検出）
 - `architecture/` — 設計ドキュメント（`compaction-memory-model.md`, `window-manifest-v1.schema.json` 等）
 - `tests/` — bats テスト

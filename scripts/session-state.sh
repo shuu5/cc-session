@@ -11,11 +11,10 @@
 # =============================================================================
 set -euo pipefail
 
-# LLM thinking / compaction インジケータ SSOT（COMPACTION_INDICATORS / 進行形判定に使用）
-# cld-observe-any と判定語彙を共有する
+# compaction フェーズ名 SSOT（detect_state の processing 判定に使用）
 _SS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-# shellcheck source=lib/llm-indicators.sh
-source "$_SS_LIB_DIR/llm-indicators.sh"
+# shellcheck source=lib/compaction-indicators.sh
+source "$_SS_LIB_DIR/compaction-indicators.sh"
 
 # =============================================================================
 # パターン定義（Claude Code UI変更時はここを更新）

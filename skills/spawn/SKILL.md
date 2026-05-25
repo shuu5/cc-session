@@ -58,11 +58,10 @@ description: |
    ```
    追加オプション:
    □ コンテキスト注入（現在の会話の要約を引き継ぐ）
-   □ 完了監視（完了時に報告）
    ```
 
    - コンテキスト注入 → 会話要約を生成して PROMPT に結合（50行以内）
-   - 完了監視 → WITH_WATCH=true
+   - 完了監視はデフォルト ON（後述の Step 4）。不要なら「監視なし」、途中経過も追うなら「監視して」と指示
 
    ### パターン C: cd 意図なし・テキストあり → 即実行
    テキストを prompt として `cld-spawn "$PROMPT"` を実行。
@@ -129,19 +128,30 @@ description: |
 
    stdout からウィンドウ名を取得（`spawned → tmux window 'WINDOW_NAME'` の形式）。
 
-4. watch 処理（WITH_WATCH=true の場合）
+4. 完了監視（`WATCH=off` 以外、デフォルト ON）
 
-   spawn 後に Bash tool (run_in_background) で監視を開始:
+   spawn 元のこのセッションが spawn 先の完了を監視し報告する。「投げっぱなし」「監視不要」と指示された場合のみ省略する。
+   Bash tool の `run_in_background: true` で以下を起動する。状態を逐次 stdout に出すため経過を追える:
 
    ```bash
    SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT}/scripts"
-   WINDOW_NAME="<Step 3で取得したウィンドウ名>"
-   bash "$SCRIPT_DIR/session-state.sh" wait "$WINDOW_NAME" input-waiting --timeout 300 && \
-     bash "$SCRIPT_DIR/session-comm.sh" capture "$WINDOW_NAME" --lines 30
+   WINDOW_NAME="<Step 3 で取得したウィンドウ名>"
+   TIMEOUT=300; ELAPSED=0
+   until bash "$SCRIPT_DIR/session-state.sh" state "$WINDOW_NAME" 2>/dev/null | grep -qx "input-waiting"; do
+     STATE=$(bash "$SCRIPT_DIR/session-state.sh" state "$WINDOW_NAME" 2>/dev/null || echo exited)
+     echo "[${ELAPSED}s] $STATE"
+     { [ "$STATE" = "exited" ] || [ "$ELAPSED" -ge "$TIMEOUT" ]; } && break
+     sleep 10; ELAPSED=$((ELAPSED + 10))
+   done
+   echo "[final] $(bash "$SCRIPT_DIR/session-state.sh" state "$WINDOW_NAME" 2>/dev/null || echo exited)"
+   bash "$SCRIPT_DIR/session-comm.sh" capture "$WINDOW_NAME" --lines 30
    ```
 
-   - 完了通知を受け取ったら、capture 結果を要約してユーザーに報告
-   - タイムアウト時は「タイムアウトしました（5分）」と報告
+   - 「監視して」「経過も教えて」（詳細監視）では `sleep 10` を短く（例 5）して途中経過（processing）も報告に含める。
+   - `run_in_background` の完了通知を受けたら、capture を下記フォーマットで要約報告する:
+     - **Claude Code セッション**（状態 input-waiting / error / exited）: 状態 ＋ 作業内容の要約 ＋ 直近の操作・ツール呼び出し
+     - **一般シェルペイン**（状態 idle）: 実行コマンドと出力の要約 ＋ 完了/実行中/エラーの判定
+     - **タイムアウト**（最終状態が input-waiting でない）: 最終状態と「どこまで進んだか」を報告
 
 ## コンテキスト注入の形式
 
@@ -167,6 +177,6 @@ description: |
 - 会話コンテキストは引き継がれない（コンテキスト注入時はテキスト要約のみ）
 - cd なしの場合、作業ディレクトリは呼び出し元の `pwd` が引き継がれる
 - セッションスコープの権限は引き継がれない
-- watch のタイムアウトはデフォルト300秒（5分）
+- 完了監視はデフォルト ON（不要なら「投げっぱなし」「監視不要」）。タイムアウトはデフォルト300秒。長時間・常駐監視はこのプラグインの範囲外
 - `--worktree` で作成した worktree は手動管理（自動削除しない）。不要時は `worktree-delete` で削除
 - `--worktree` は git リポジトリ内でのみ使用可能（bare repo 構造を前提）

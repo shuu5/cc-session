@@ -33,6 +33,8 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"RESTORE_PAYLOAD_XYZ"* ]]
     [[ "$output" == *"復元"* ]]
+    # 復帰手順で命令・制約の carry-forward を促す
+    [[ "$output" == *"命令・制約"* ]]
     # WM 本体は consumed に移動している
     [ ! -f "$WM_FILE" ]
     [ -f "$CONSUMED" ]

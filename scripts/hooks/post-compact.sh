@@ -24,8 +24,9 @@ fi
 echo "=== [ready-compaction/PostCompact] Working Memory 復元 ==="
 echo ""
 echo "### 復帰手順"
-echo "1. 以下の Working Memory を読み、処理中タスクと次のステップを把握する"
-echo "2. 必要に応じて mcp__doobidoo__memory_search で関連記憶を取得する（query: 直近のタスク内容）"
+echo "1. 以下の Working Memory を読み、「計画弧・次のステップ」で現在地と次の行動を把握する"
+echo "2. 「この effort を貫く命令・制約」節を必ず把握し、以降のサイクルへ carry-forward する（忘れない）"
+echo "3. 必要に応じて mcp__doobidoo__memory_search で横断/インシデントの事実を取得する"
 echo ""
 
 if [ -f "$WORKING_MEMORY_FILE" ]; then

@@ -33,13 +33,16 @@ teardown() {
     [[ "$output" == *"memory_search"* ]]
 }
 
-@test "session-start-compact: 未消費 WM があれば復元警告を出す" {
+@test "session-start-compact: working のみ（consumed なし）→ 条件付きの復元案内（断定 Read 誘導でない）" {
     mkdir -p "$WORKING_MEMORY_DIR"
     touch "$MARKER"
     printf '%s\n' "UNCONSUMED" > "$WM_FILE"
     run bash "$SESSION_START"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"未復元の作業状態が残っています"* ]]
+    [[ "$output" == *"退避された作業状態があります"* ]]
+    [[ "$output" == *"まだ注入していなければ"* ]]
+    # 旧来の断定的「未復元 → Read して復元せよ」誤誘導は出さない
+    [[ "$output" != *"未復元の作業状態が残っています"* ]]
 }
 
 @test "session-start-compact: consumed があれば carry-forward リマインダを出す" {
@@ -49,4 +52,18 @@ teardown() {
     run bash "$SESSION_START"
     [ "$status" -eq 0 ]
     [[ "$output" == *"carry-forward"* ]]
+}
+
+@test "session-start-compact: working+consumed 共存 → consumed 優先・working の Read 誘導/一覧掲載を出さない（順序非依存）" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    printf '%s\n' "STAGED" > "$WM_FILE"
+    printf '%s\n' "## この effort を貫く命令・制約" > "$WORKING_MEMORY_DIR/working-memory.consumed.md"
+    run bash "$SESSION_START"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"carry-forward"* ]]
+    # working の復元誘導（誤誘導）は出さない
+    [[ "$output" != *"退避された作業状態があります"* ]]
+    # 外部化ファイル一覧にも working-memory.md を出さない（consumed 済み＝重複とみなす）
+    [[ "$output" != *"- working-memory.md"* ]]
 }

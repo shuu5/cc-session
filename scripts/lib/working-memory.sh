@@ -34,8 +34,9 @@ _wm_extract_section() {
         $0 == h            { in_sec=1; next }
         in_sec && /^## /   { in_sec=0; next }
         !in_sec            { next }
-        /<!--/             { incmt=1 }
-        incmt              { if ($0 ~ /-->/) incmt=0; next }
+        incmt              { if ($0 ~ /-->/) incmt=0; next }   # 複数行コメント内（行頭オープンで開始）
+        { gsub(/<!--.*-->/, "") }                              # 同一行で完結するコメントを除去
+        /^[[:space:]]*<!--/ { incmt=1; next }                  # 行頭の未完オープンのみコメント区間入り（命令行中の <!-- は飲み込まない）
         /^[[:space:]]*$/   { next }
                            { print }
     ' "$file" 2>/dev/null
@@ -50,7 +51,8 @@ extract_effort_directives() {
     [ -f "$file" ] || return 0
     local out
     out="$(_wm_extract_section "$file" "$WM_HEADING_DIRECTIVES")"
-    if [ -z "$out" ]; then
+    # 新節が「不在」のときのみ旧スキーマにフォールバック（新節が在って空＝意図的な空は尊重する）
+    if [ -z "$out" ] && ! grep -qF -- "$WM_HEADING_DIRECTIVES" "$file" 2>/dev/null; then
         out="$(_wm_extract_section "$file" "$WM_HEADING_LEGACY_CONTEXT")"
     fi
     printf '%s' "$out"

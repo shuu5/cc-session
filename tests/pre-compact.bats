@@ -51,6 +51,32 @@ EOF
     grep -q "PRECOMPACT_CARRY" "$WM_FILE"
 }
 
+@test "pre-compact: 既存 WM があるとき consumed を carry せず尊重する（混入させない）" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    printf '%s\n' "SKILL_CONTENT_MARKER" > "$WM_FILE"
+    cat > "$WORKING_MEMORY_DIR/working-memory.consumed.md" <<'EOF'
+## この effort を貫く命令・制約
+- [confirm] SHOULD_NOT_LEAK
+EOF
+    run bash "$PRE_COMPACT"
+    [ "$status" -eq 0 ]
+    grep -q "SKILL_CONTENT_MARKER" "$WM_FILE"
+    ! grep -q "SHOULD_NOT_LEAK" "$WM_FILE"
+}
+
+@test "pre-compact: 旧3節 consumed もフック経由で carry-forward する" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    cat > "$WORKING_MEMORY_DIR/working-memory.consumed.md" <<'EOF'
+## 重要なコンテキスト
+- [auto] OLD_SCHEMA_VIA_HOOK
+EOF
+    run bash "$PRE_COMPACT"
+    [ "$status" -eq 0 ]
+    grep -q "OLD_SCHEMA_VIA_HOOK" "$WM_FILE"
+}
+
 @test "pre-compact: マーカーあり・スキルが書いた WM は上書きしない" {
     mkdir -p "$WORKING_MEMORY_DIR"
     touch "$MARKER"

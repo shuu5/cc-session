@@ -83,8 +83,37 @@ EOF
     [ -z "$output" ]
 }
 
-@test "working-memory: 多重 source ガードが効く（二重 source で安全）" {
-    run bash -c "source '$WM_LIB' && source '$WM_LIB' && echo \"\$WM_HEADING_DIRECTIVES\""
+@test "working-memory: 命令行に含まれる HTML コメントで命令を落とさない（awk 誤爆回帰）" {
+    cat > "$SANDBOX/inline.md" <<'EOF'
+## この effort を貫く命令・制約
+- [auto] keep_A
+- [auto] inline <!-- c --> keep_B
+- [auto] stray <!-- no closer keep_C
+- [auto] keep_D
+EOF
+    run bash -c "source '$WM_LIB' && extract_effort_directives '$SANDBOX/inline.md'"
     [ "$status" -eq 0 ]
-    [[ "$output" == '## この effort を貫く命令・制約' ]]
+    [[ "$output" == *'keep_A'* ]]
+    [[ "$output" == *'keep_B'* ]]
+    [[ "$output" == *'keep_C'* ]]   # クローザ無し <!-- が後続項目を飲み込まない
+    [[ "$output" == *'keep_D'* ]]
+}
+
+@test "working-memory: 新節が在って空なら旧節へフォールバックしない（空尊重）" {
+    cat > "$SANDBOX/empty-new.md" <<'EOF'
+## この effort を貫く命令・制約
+
+## 重要なコンテキスト
+- [confirm] LEGACY_SHOULD_NOT_LEAK
+EOF
+    run bash -c "source '$WM_LIB' && extract_effort_directives '$SANDBOX/empty-new.md'"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *'LEGACY_SHOULD_NOT_LEAK'* ]]
+}
+
+@test "working-memory: 多重 source ガードが効く（2回目は本体を実行しない）" {
+    # 1回目 source 後に定数を上書き → 2回目 source。ガードが効けば本体（再代入）はスキップされ上書き値が残る
+    run bash -c "source '$WM_LIB' && WM_HEADING_DIRECTIVES='SENTINEL' && source '$WM_LIB' && echo \"\$WM_HEADING_DIRECTIVES\""
+    [ "$status" -eq 0 ]
+    [[ "$output" == 'SENTINEL' ]]
 }

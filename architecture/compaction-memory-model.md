@@ -151,7 +151,7 @@ lifecycle: temporary
 
 1. **機械（決定論・絶対落とさない）**: `emit_working_memory <ts> <trigger> <consumed>` が、
    consumed の「この effort を貫く命令・制約」節を機械抽出して新 working-file へ引き継ぐ。
-   新節が空/不在なら旧スキーマ「重要なコンテキスト」節をフォールバックで読む（後方互換）。
+   新節が**不在**なら旧スキーマ「重要なコンテキスト」節をフォールバックで読む（新節が在って空＝意図的な空は尊重。後方互換）。
 2. **LLM（更新）**: スキル Step 3b が生成済みファイルを Edit し、現在文脈とマージ（古い項目の削除・新規追加）。
 
 consumed は PostCompact が working→consumed へ mv して供給する。次サイクルの退避で新 working を

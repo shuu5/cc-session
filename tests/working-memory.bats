@@ -99,6 +99,31 @@ EOF
     [[ "$output" == *'keep_D'* ]]
 }
 
+@test "working-memory: 複数行コメントのクローザと同一行にある命令を落とさない" {
+    cat > "$SANDBOX/closer.md" <<'EOF'
+## この effort を貫く命令・制約
+<!-- 注釈
+継続 --> [auto] CLOSER_LINE_DIRECTIVE
+- [confirm] AFTER
+EOF
+    run bash -c "source '$WM_LIB' && extract_effort_directives '$SANDBOX/closer.md'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'CLOSER_LINE_DIRECTIVE'* ]]
+    [[ "$output" == *'AFTER'* ]]
+}
+
+@test "working-memory: 1行に完結コメントが複数あっても間のテキストを食わない" {
+    cat > "$SANDBOX/multi.md" <<'EOF'
+## この effort を貫く命令・制約
+- [auto] first <!--a--> MID_KEEP <!--b--> last
+EOF
+    run bash -c "source '$WM_LIB' && extract_effort_directives '$SANDBOX/multi.md'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'first'* ]]
+    [[ "$output" == *'MID_KEEP'* ]]
+    [[ "$output" == *'last'* ]]
+}
+
 @test "working-memory: 新節が在って空なら旧節へフォールバックしない（空尊重）" {
     cat > "$SANDBOX/empty-new.md" <<'EOF'
 ## この effort を貫く命令・制約

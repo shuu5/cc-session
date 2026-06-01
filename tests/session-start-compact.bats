@@ -41,3 +41,12 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"未復元の作業状態が残っています"* ]]
 }
+
+@test "session-start-compact: consumed があれば carry-forward リマインダを出す" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    printf '%s\n' "## この effort を貫く命令・制約" > "$WORKING_MEMORY_DIR/working-memory.consumed.md"
+    run bash "$SESSION_START"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"carry-forward"* ]]
+}

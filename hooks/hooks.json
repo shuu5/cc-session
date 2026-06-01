@@ -1,5 +1,5 @@
 {
-  "_comment": "ready-compaction: compaction を生き延びる三層記憶ライフサイクル。PreCompact=Working Memory 退避, PostCompact=復元+consumed, SessionStart(compact)=ambient hints。全フックは $WORKING_MEMORY_DIR/.compaction-enabled マーカーがあるプロジェクトでのみ動作する（opt-in）。マーカーは /session:ready-compaction 初回実行時に自動作成される。",
+  "_comment": "ready-compaction: compaction を生き延びる Working Memory ライフサイクル（2軸 × carrier の effort 一時層）。PreCompact=退避+carry-forward, PostCompact=復元+consumed, SessionStart(compact)=ambient hints。全フックは $WORKING_MEMORY_DIR/.compaction-enabled マーカーがあるプロジェクトでのみ動作する（opt-in）。マーカーは /session:ready-compaction 初回実行時に自動作成される。",
   "hooks": {
     "PreCompact": [
       {

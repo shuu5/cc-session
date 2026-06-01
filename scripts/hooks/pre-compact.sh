@@ -14,6 +14,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/session-env.sh
 source "$SCRIPT_DIR/../lib/session-env.sh" 2>/dev/null || exit 0
+# shellcheck source=../lib/working-memory.sh
+source "$SCRIPT_DIR/../lib/working-memory.sh" 2>/dev/null || true
 
 # --- opt-in ゲート: マーカー不在なら何もしない ---
 [ -f "$COMPACTION_ENABLED_MARKER" ] || exit 0
@@ -38,18 +40,22 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 _write_skeleton() {
     local tmp
     tmp="$(mktemp "${WORKING_MEMORY_FILE}.XXXXXX" 2>/dev/null)" || return 1
+    # 2 節スキーマ（SSOT = working-memory.sh）。前サイクルの consumed があれば
+    # 「命令・制約」節を機械的に carry-forward（スキル未実行でも命令を落とさない）。
     {
-        echo "---"
-        echo "externalized_at: \"$TIMESTAMP\""
-        echo "trigger: auto_precompact"
-        echo "lifecycle: temporary"
-        echo "---"
-        echo ""
-        echo "## 作業状態（PreCompact 自動退避）"
-        echo ""
-        echo "ready-compaction スキル未実行のまま compaction が発生したため、フックが"
-        echo "最小スケルトンのみ書き出しました。詳細な作業状態は退避されていません。"
-        echo "次回は /compact の前に /session:ready-compaction を実行してください。"
+        if declare -f emit_working_memory >/dev/null 2>&1; then
+            emit_working_memory "$TIMESTAMP" auto_precompact "$WORKING_MEMORY_CONSUMED_FILE"
+            echo ""
+            echo "<!-- ready-compaction スキル未実行のままの自動退避。計画弧は空。"
+            echo "     次回は /compact の前に /session:ready-compaction を実行してください。 -->"
+        else
+            # lib 未ロード時のフォールバック: 最小 frontmatter のみ（壊さない）
+            echo "---"
+            echo "externalized_at: \"$TIMESTAMP\""
+            echo "trigger: auto_precompact"
+            echo "lifecycle: temporary"
+            echo "---"
+        fi
     } > "$tmp" 2>/dev/null && mv -f "$tmp" "$WORKING_MEMORY_FILE" 2>/dev/null || {
         rm -f "$tmp" 2>/dev/null
         return 1

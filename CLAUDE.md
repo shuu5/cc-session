@@ -1,15 +1,15 @@
 # cc-session
 
-汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、および **ready-compaction**（compaction 知識外部化）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
+汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、および **ready-compaction**（compaction-prep の policy router 兼 effort 一時層 carrier）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
 ## 構成
 
 - `skills/` — `spawn` / `fork` / `ready-compaction` スキル（`/session:spawn` 等で起動）
 - `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）
 - `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）
-- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`）
+- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`, `working-memory.sh`〔2節スキーマ＋carry-forward の SSOT〕）
 - `hooks/hooks.json` — フック登録（PreCompact / PostCompact / SessionStart:compact、自動検出）
-- `architecture/` — 設計ドキュメント（`compaction-memory-model.md`, `window-manifest-v1.schema.json` 等）
+- `architecture/` — 設計ドキュメント（`compaction-memory-model.md`〔記憶外部化の設計 SSOT〕, `ready-compaction-redesign.md`〔フェーズ別の決定根拠〕, `window-manifest-v1.schema.json` 等）
 - `tests/` — bats テスト
 
 ## namespace / 環境変数
@@ -33,6 +33,15 @@
 | `WORKING_MEMORY_CONSUMED_FILE` | `$WORKING_MEMORY_DIR/working-memory.consumed.md` |
 | `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled`（フック発火の opt-in マーカー）|
 | `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt` |
+
+## ready-compaction の責務（policy router 兼 effort carrier）
+
+`ready-compaction` は項目を **2 軸（適用範囲 always/default/effort × 強制 auto/confirm/hard）** で分類し carrier へ委譲する。自前で抱えるのは **effort 一時層（Working Memory）だけ**:
+
+- **恒久命令**（このリポで常に真の手法・規約）→ **このプロジェクトの CLAUDE.md(git) へ追記/修正を昇格提案**（提案のみ。commit は通常フロー。**ユーザースコープのグローバル CLAUDE.md は対象外**＝スキルは自動提案も編集もしない）
+- 横断/インシデントの事実 → doobidoo ／ effort 命令・作業状態 → Working Memory（2 節スキーマ＋carry-forward）／ hard 候補 → `[hard候補]` マーク（実強制は Phase-2 の hook）
+
+2 節スキーマ・タグ書式・carry-forward の SSOT は `scripts/lib/working-memory.sh`。設計詳細は `architecture/compaction-memory-model.md`。
 
 ## tmux Window 命名規則
 

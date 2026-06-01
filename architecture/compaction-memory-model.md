@@ -45,7 +45,7 @@ effort 一時層（Working Memory ファイル）だけで、恒久命令（→ 
 | 恒久・横断/インシデントの**事実** | doobidoo | 中央サーバ | 本来用途に縮小 |
 | **`effort` × auto/confirm** | **Working Memory ファイル** | スキルが退避＋carry-forward | **ready-compaction（コア）** |
 | any × **`hard`** | **PreToolUse hook + marker** | config（非圧縮）| **Phase-2**（スキルは**候補マーク**のみ）|
-| ~~MEMORY.md~~ | — | — | このユーザー構成（machine-local 同期不可）では出番なし |
+| ~~MEMORY.md~~ | — | — | machine-local のため別マシンで stranded する。carrier に使わない |
 
 **切り分け**: 「hard を除いた部分 ≠ ready-compaction」。non-hard はさらに
 「恒久 → CLAUDE.md(native, スキル不要)」と「effort → Working Memory(=スキル)」に割れる。

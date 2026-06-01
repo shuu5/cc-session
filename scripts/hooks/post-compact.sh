@@ -34,7 +34,10 @@ if [ -f "$WORKING_MEMORY_FILE" ]; then
     cat "$WORKING_MEMORY_FILE" 2>/dev/null || true
     echo ""
     echo "--- 作業状態ここまで ---"
-    # consumed マーク（削除せず mv で復元可能性を残す。次回退避で自然に孤立する）
+    # consumed マーク（削除せず mv で復元可能性を残す。次回退避で自然に孤立する）。
+    # 不変条件: 既存 consumed はここで上書きされるが、次サイクルの PreCompact / ready-compaction が
+    # emit_working_memory 経由で旧 consumed の「命令・制約」節を新 working へ機械 carry-forward 済みのため、
+    # pre→post を正しくペアリングする限り命令は失われない（post が pre 抜きで連続発火する病的列でのみ要注意）。
     mv -f "$WORKING_MEMORY_FILE" "$WORKING_MEMORY_CONSUMED_FILE" 2>/dev/null || true
 else
     echo "（退避された Working Memory なし — doobidoo memory_search と直近の文脈から復元してください）"

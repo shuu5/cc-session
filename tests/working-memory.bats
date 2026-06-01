@@ -142,3 +142,13 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == 'SENTINEL' ]]
 }
+
+@test "working-memory: CRLF 改行の consumed からでも命令を落とさない（CR 正規化・回帰）" {
+    printf '## この effort を貫く命令・制約\r\n- [auto] CRLF_DIRECTIVE\r\n- [confirm] CRLF_SECOND\r\n' > "$SANDBOX/crlf.md"
+    run bash -c "source '$WM_LIB' && extract_effort_directives '$SANDBOX/crlf.md'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'CRLF_DIRECTIVE'* ]]
+    [[ "$output" == *'CRLF_SECOND'* ]]
+    # 出力に CR が残らない（行末の \r を除去している）
+    [[ "$output" != *$'\r'* ]]
+}

@@ -118,7 +118,7 @@
   - 恒久 standing rule → 「**プロジェクトの** CLAUDE.md(git) へ追記/修正しては？」と**提案**（commit は通常フローへ委譲）。**グローバル CLAUDE.md は対象外**（§0.5-2。横断的なら手動検討を口頭で促すのみ）。
   - 横断/インシデントの事実 → doobidoo（縮小した用途）。
   - effort 命令・状態 → working-file。
-  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `※hard化候補(Phase-2 hook)` とマーク。
+  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `[hard候補]` タグでマーク（実強制は Phase-2 hook）。
 - **Step 2（doobidoo 保存）→ 降格**。「作業状態を全部 doobidoo」をやめ、**横断/インシデントの事実のみ**。プロジェクト固有の恒久知識は「git にコミット」へ誘導。
 - **Step 3（Working Memory 退避）→ スキーマ2分割＋ハイブリッド carry-forward**（§7.4 のスキーマ、§0.5-3）。
   - 退避前に `working-memory.consumed.md` が存在すれば、その「この effort を貫く命令・制約」節を **シェルヘルパーが機械的に抽出して新 working-file へ必ず prepend**（決定論的に「絶対落とさない」）＋ **LLM が現在文脈とマージ・更新**（古い項目の削除・追記）。＝「忘れて続けていった」の治療。
@@ -140,7 +140,7 @@ lifecycle: temporary
 <!-- persistent within effort。consumed から決定論的に carry-forward。
      各項目に強制モードをタグ: [auto] / [confirm] / [hard候補] -->
 - [auto] 例: 軽微でなければ spawn+feature-dev で実装
-- [confirm] 例: merge 前にユーザー確認（※hard化候補 → Phase-2 hook）
+- [hard候補] 例: merge 前にユーザー確認（実強制は Phase-2 hook）
 ```
 
 ### T3. フック改訂（最小）
@@ -152,8 +152,10 @@ lifecycle: temporary
 - 三層記憶モデルを **2軸 × carrier モデル**（§5）へ刷新、または追補。
 - 「imperatives vs facts」「presence→effort 統合」「ready-compaction = router + effort carrier」「Phase-2 hook への接続点」を明記。
 
-### T5. `tests/compaction-env.bats` 追従
+### T5. テスト追従
 - スキーマ2分割・carry-forward・router 分類のテストを追加/更新。
+  実装では `tests/working-memory.bats`（carry-forward シェル）/ `pre-compact.bats` / `post-compact.bats` /
+  `session-start-compact.bats` に分割し、既存 `compaction-env.bats` も残置（§0.5 ビルド細部に従う）。
 
 ### T6. ドキュメント整合
 - README.md / SKILL.md description / 関連 docs を新責務に合わせ更新。
@@ -208,6 +210,6 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 - 設計: `architecture/compaction-memory-model.md`
 - フック: `scripts/hooks/{pre-compact,post-compact,session-start-compact}.sh`
 - env/パス SSOT: `scripts/lib/session-env.sh`（`WORKING_MEMORY_DIR` 等。既定 `$PWD/.claude-session`）
-- テスト: `tests/compaction-env.bats`
+- テスト: `tests/compaction-env.bats`（再設計後は `working-memory.bats` / `pre-compact.bats` / `post-compact.bats` / `session-start-compact.bats` を追加）
 - 既定の working-file: `$PWD/.claude-session/working-memory.md` / consumed: `working-memory.consumed.md`
 - opt-in マーカー: `$PWD/.claude-session/.compaction-enabled`

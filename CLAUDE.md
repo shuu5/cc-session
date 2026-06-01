@@ -7,7 +7,7 @@
 - `skills/` — `spawn` / `fork` / `ready-compaction` スキル（`/session:spawn` 等で起動）
 - `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）
 - `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）
-- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`, `working-memory.sh`〔2節スキーマ＋carry-forward の SSOT〕）
+- `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`〔auto-compaction フェーズ名の SSOT〕, `working-memory.sh`〔2節スキーマ＋carry-forward の SSOT〕）
 - `hooks/hooks.json` — フック登録（PreCompact / PostCompact / SessionStart:compact、自動検出）
 - `architecture/` — 設計ドキュメント（`compaction-memory-model.md`〔記憶外部化の設計 SSOT〕, `ready-compaction-redesign.md`〔フェーズ別の決定根拠〕, `window-manifest-v1.schema.json` 等）
 - `tests/` — bats テスト

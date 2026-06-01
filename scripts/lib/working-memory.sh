@@ -31,6 +31,7 @@ export WM_HEADING_PLAN WM_HEADING_DIRECTIVES WM_HEADING_LEGACY_CONTEXT
 _wm_extract_section() {
     local file="$1" heading="$2"
     awk -v h="$heading" '
+        { sub(/\r$/, "") }                                     # CRLF 改行を正規化（CRLF 見出しの照合失敗による命令の全喪失を防ぐ）
         $0 == h            { in_sec=1; next }
         in_sec && /^## /   { in_sec=0; next }
         !in_sec            { next }
@@ -44,7 +45,8 @@ _wm_extract_section() {
 
 # extract_effort_directives <file>
 #   <file>（通常は consumed）の「命令・制約」節の項目を stdout に返す。
-#   新節が空/不在なら旧スキーマ「重要なコンテキスト」節をフォールバックで読む（後方互換）。
+#   新節が「不在」のときのみ旧スキーマ「重要なコンテキスト」節をフォールバックで読む（後方互換。
+#   新節が在って空＝意図的な空は尊重し、フォールバックしない）。
 #   ファイル不在なら空出力 + return 0。
 extract_effort_directives() {
     local file="$1"

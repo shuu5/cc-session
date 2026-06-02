@@ -36,3 +36,17 @@ COMPACTION_LOG_FILE="${COMPACTION_LOG_FILE:-$WORKING_MEMORY_DIR/compaction-log.t
 
 export WORKING_MEMORY_DIR WORKING_MEMORY_FILE WORKING_MEMORY_CONSUMED_FILE
 export COMPACTION_ENABLED_MARKER COMPACTION_LOG_FILE
+
+# =============================================================================
+# ready-compaction Phase-2: hard 強制（enforce）policy / marker パス群
+# =============================================================================
+# Working Memory と同じくプロジェクトローカル（$PWD/.claude-session 配下）。
+# policy ファイルの存在が opt-in（不在/空 → hook は no-op=allow）。環境変数で上書き可能。
+#   - ENFORCE_POLICY_FILE  人間が ratify した gate 定義（/session:enforce が生成）
+#   - ENFORCE_MARKER_DIR   操作インスタンス marker の格納先（unlock helper が生シェルで touch）
+#   - ENFORCE_SHA_TIMEOUT  sha_keyed gate の SHA 導出 1 呼び出しあたりの上限秒（block 経路限定）
+ENFORCE_POLICY_FILE="${ENFORCE_POLICY_FILE:-$WORKING_MEMORY_DIR/enforce-policy.json}"
+ENFORCE_MARKER_DIR="${ENFORCE_MARKER_DIR:-$WORKING_MEMORY_DIR/enforce-markers}"
+ENFORCE_SHA_TIMEOUT="${ENFORCE_SHA_TIMEOUT:-5}"
+
+export ENFORCE_POLICY_FILE ENFORCE_MARKER_DIR ENFORCE_SHA_TIMEOUT

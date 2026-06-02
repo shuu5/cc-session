@@ -58,7 +58,7 @@ effort 一時層（Working Memory ファイル）だけで、恒久命令（→ 
 | 恒久命令（このリポで常に真）| **プロジェクト CLAUDE.md へ昇格提案のみ**（commit は通常フロー。グローバル CLAUDE.md は対象外）|
 | 横断/インシデントの事実 | doobidoo に保存（事実のみ）|
 | effort 命令・作業状態 | Working Memory に退避し、次サイクルへ carry-forward（コア）|
-| hard 候補 | Working Memory の「命令・制約」節に `[hard候補]` でマーク（実強制は Phase-2）|
+| hard 候補 | Working Memory の「命令・制約」節に `[hard候補]` でマーク → `/session:enforce` で gate 昇格（実強制は `pretooluse-enforce.sh`＝Phase-2 で実装済み。設計は ready-compaction-redesign §9.6）|
 
 ## hook 発火順序
 

@@ -118,7 +118,7 @@
   - 恒久 standing rule → 「**プロジェクトの** CLAUDE.md(git) へ追記/修正しては？」と**提案**（commit は通常フローへ委譲）。**グローバル CLAUDE.md は対象外**（§0.5-2。横断的なら手動検討を口頭で促すのみ）。
   - 横断/インシデントの事実 → doobidoo（縮小した用途）。
   - effort 命令・状態 → working-file。
-  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `[hard候補]` タグでマーク（実強制は Phase-2 hook）。
+  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `[hard候補]` タグでマーク（実強制は `pretooluse-enforce.sh`＝§9.6/Phase-2 で実装済み。`/session:enforce` で gate 化）。
 - **Step 2（doobidoo 保存）→ 降格**。「作業状態を全部 doobidoo」をやめ、**横断/インシデントの事実のみ**。プロジェクト固有の恒久知識は「git にコミット」へ誘導。
 - **Step 3（Working Memory 退避）→ スキーマ2分割＋ハイブリッド carry-forward**（§7.4 のスキーマ、§0.5-3）。
   - 退避前に `working-memory.consumed.md` が存在すれば、その「この effort を貫く命令・制約」節を **シェルヘルパーが機械的に抽出して新 working-file へ必ず prepend**（決定論的に「絶対落とさない」）＋ **LLM が現在文脈とマージ・更新**（古い項目の削除・追記）。＝「忘れて続けていった」の治療。
@@ -140,7 +140,7 @@ lifecycle: temporary
 <!-- persistent within effort。consumed から決定論的に carry-forward。
      各項目に強制モードをタグ: [auto] / [confirm] / [hard候補] -->
 - [auto] 例: 軽微でなければ spawn+feature-dev で実装
-- [hard候補] 例: merge 前にユーザー確認（実強制は Phase-2 hook）
+- [hard候補] 例: merge 前にレビュー必須（実強制は `pretooluse-enforce.sh`＝Phase-2 実装済み。`/session:enforce` で gate 化）
 ```
 
 ### T3. フック改訂（最小）
@@ -208,7 +208,14 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 
 > Phase-1 完了（PR #2 merge, main `7ac6915`）後、Phase-2 着手前に anchor セッション（cc-session main）で grill-me し確定。
 > **以下が §9.1〜§9.5 および §6 の関連記述より優先される。** 実装はこの節に従う。
-> ユーザー判断により**今回は doc 化のみ**（実装は後日・別セッション）。`[confirm]` ゲート（Phase-2 着手はユーザー確認必須）は引き続き有効。
+>
+> **実装状況: 2026-06-02 に Phase-2 実装完了**（ブランチ `feat/phase2-hard-enforce`。`[confirm]` ゲート＝ユーザー承認済み）。
+> 下の P2-T1〜T8 はすべて実装済み（各タスクに実ファイル名を併記）。実装時の確定事項:
+> - hook 名は **`pretooluse-enforce.sh`**（§9.6 P2-T2 の SSOT 表記を採用。設計合成内の `enforce-bash.sh` はドリフトのため不採用）。
+> - `subject_re` は **POSIX ERE 安全形**（bash `=~`）に確定。PCRE 非捕捉グループ `(?:...)` は使わず、対象は **capture group 1**。
+> - `{subject}` トークンを `sha_cmd` と `unlock_hint` の両方で統一（合成案の `${subject}` 表記から変更）。
+> - hot path（allow 経路）の jq 呼び出しを **health 1 回 + match 1 回**に最適化。SHA キャッシュは安全性の穴のため**不採用**（block 経路で都度 fresh 取得）。
+> - 例 policy は `architecture/enforce-policy.example.json`（スキーマの正典）。
 
 確定した設計判断（C-1〜C-10）:
 
@@ -236,16 +243,16 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 4. gate 一致 ＆ marker 不在 → **block**（exit 2 ＋ stderr: どの gate か・理由・ユーザーが叩く unlock コマンド）
 5. policy 在り＋破損/jq 不在/障害 → **fail-closed (scoped)**: 内蔵 danger list のみ block＋大警告、他は allow
 
-派生実装タスク（Phase-2、着手は別セッション）:
+派生実装タスク（Phase-2・**2026-06-02 実装完了**。✅＝実装済み、実ファイル名を併記）:
 
-- **P2-T1** policy フォーマット確定（`enforce-policy.json` に確定すれば C-5 の opt-in 存在チェック glob が具体化）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチの SSOT）
-- **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（上記判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策・上記補足〕）
-- **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録
-- **P2-T4** `enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用）
-- **P2-T5** `/session:enforce` skill（認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）
-- **P2-T6** ready-compaction router 連携（`[hard候補]` 検出時に `/session:enforce` を提案）
-- **P2-T7** doc 整合（本節・§6 修正済・`compaction-memory-model.md`・`SKILL.md`・README）
-- **P2-T8** bats（policy parse / gate match / marker 有無 / fail-closed scoped / opt-in no-op / unlock helper）
+- ✅ **P2-T1** policy フォーマット確定（`enforce-policy.json`／例は `architecture/enforce-policy.example.json`）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチ/marker 導出の SSOT。`ep_*` 関数群。marker は読み取りのみ＝作成しない）。`session-env.sh` に `ENFORCE_POLICY_FILE` / `ENFORCE_MARKER_DIR` / `ENFORCE_SHA_TIMEOUT` を追加。tests: `tests/enforce-policy.bats`。
+- ✅ **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（5 ステップ判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策〕。lib 不在時は no-op）。tests: `tests/pretooluse-enforce.bats`。
+- ✅ **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録（`${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pretooluse-enforce.sh`、timeout 10000）。
+- ✅ **P2-T4** `scripts/enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用。gate 取り違え防止・fail-closed では作らない）。tests: `tests/enforce-unlock.bats`（hook↔helper の marker 名一致と SHA 前進での自動失効を往復検証）。
+- ✅ **P2-T5** `skills/enforce/SKILL.md`（`/session:enforce` 認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）。
+- ✅ **P2-T6** ready-compaction router 連携（`skills/ready-compaction/SKILL.md` の carrier/router 行を更新し `[hard候補]` 検出時に `/session:enforce` を提案）。
+- ✅ **P2-T7** doc 整合（本節・§6・`compaction-memory-model.md`・`README.md`・`CLAUDE.md`・両 `SKILL.md`）。
+- ✅ **P2-T8** bats（policy parse / gate match / marker 有無 / TTL / fail-closed scoped / opt-in no-op / unlock helper / hook 統合）。`tests/{enforce-policy,pretooluse-enforce,enforce-unlock}.bats` に分割。
 
 ---
 

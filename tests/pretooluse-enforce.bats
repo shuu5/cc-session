@@ -153,3 +153,14 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 2 ]
     [[ "$output" == *"git-push"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# hooks.json 登録（C-8・P2-T3 回帰）
+# ---------------------------------------------------------------------------
+
+@test "registration: hooks.json が PreToolUse:Bash に enforce hook を登録している" {
+    run jq -r '.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[].command' "$ROOT_DIR/hooks/hooks.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"pretooluse-enforce.sh"* ]]
+    [[ "$output" == *'${CLAUDE_PLUGIN_ROOT}'* ]]
+}

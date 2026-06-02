@@ -2,6 +2,15 @@
 
 汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、**ready-compaction**（compaction-prep の policy router 兼 effort 一時層 carrier）、および **enforce**（hard 強制層: PreToolUse(Bash) hook が gate 未通過の危険操作を deny-block する。policy 存在で opt-in）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
+## レビュー・検証方針（このプロジェクトの必須ルール）
+
+セキュリティ/正しさにクリティカルな変更（`scripts/hooks/` ・ `scripts/lib/` ・ enforce 層 ・ compaction フック等）は、**main へ merge する前に ultracode の多次元 adversarial レビュー＋検証を必須**とする。
+
+- **Workflow ツール**で「観点別レビュー → 各 finding を懐疑的検証（実コマンドで突破/退行を試行）→ 合成判定」を回す。**bats が全 green でもレビューは independent に行う**（テストが誤挙動を encode していることがあるため。実例: Phase-2 で 260 green のまま `#` bypass・無効 ERE 沈黙失効・認可スコープ漏洩が CONFIRMED された）。
+- セキュリティのコア（マッチング・fail-closed 経路・marker 導出等）を**実質変更したら再レビュー必須**（修正で新たな穴が出るため。実例: 第1ラウンド修正後の第2ラウンドで ERE エンジン乖離・シェル難読化が判明）。
+- 判定が **CONDITIONAL / NO-GO の間は merge しない**。CONFIRMED な fail-open は merge 前に解消する。可能なら merge 後に end-to-end スモークで実機確認する。
+- 些末な doc / コメント / 設定変更はこの限りではない。
+
 ## 構成
 
 - `skills/` — `spawn` / `fork` / `ready-compaction` / `enforce` スキル（`/session:spawn` 等で起動）

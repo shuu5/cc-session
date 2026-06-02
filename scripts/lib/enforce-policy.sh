@@ -75,7 +75,10 @@ ep_policy_health() {
         local re
         while IFS= read -r re; do
             [ -z "$re" ] && continue
-            grep -qE -- "$re" </dev/null 2>/dev/null
+            # ★検証は実マッチと同一エンジン（bash [[ =~ ]]）で行う。grep -qE とは ERE 方言が異なり
+            #   先頭量化子 `*x` 等で発散する（grep は valid 扱い→gate が黙って失効する fail-open）。
+            #   bash の =~ はコンパイル不能を rc=2 で返すので、それを corrupt 判定に使う。
+            ( [[ "probe" =~ $re ]] ) 2>/dev/null
             [ $? -eq 2 ] && { echo corrupt; return 0; }
         done < <(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null)
     fi
@@ -89,7 +92,17 @@ ep_policy_health() {
 #   される push/merge/deploy）を判定文字列から落とし、marker 不要・自己認可不要で全 gate を 1 文字で
 #   回避できてしまう（fail-open）。保持側に倒すと `ls # gh pr merge` 等を過剰 block しうるが安全側。
 ep_normalize() {
-    printf '%s' "$1" | tr -s '[:space:]' ' '
+    local s
+    # クォート/エスケープ難読化の de-obfuscate: " ' \ を除去（g'i't push → git push 等を捕捉）。
+    s=$(printf '%s' "$1" | tr -d '\042\047\134')
+    # 語分割難読化対策: ${IFS} / $IFS をスペースへ（git${IFS}push → git push）。
+    s=${s//\$\{IFS\}/ }
+    s=${s//\$IFS/ }
+    printf '%s' "$s" | tr -s '[:space:]' ' '
+    # 注意（残存・脅威モデル外）: 変数間接 `m=push; git $m` やコマンド置換 $(...) は実行なしには
+    # 解決できず本マッチャでは捕捉できない。これはグローバル git-destructive-guard.sh と共通の
+    # regex-on-command-string の原理的限界で、本層は「沈黙の・偶発的な自己認可の防止」を目的とする
+    # （決然と回避する LLM は脅威モデル外＝§9.6 C-4b・§9.7 参照）。
 }
 
 # ep_match_gate <normalized_command>

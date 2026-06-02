@@ -157,6 +157,21 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [[ "$output" == *"git-push"* ]]
 }
 
+@test "hook: クォート難読化 g'i't push を de-obfuscate して block（end-to-end）" {
+    _use_example
+    # JSON 内のクォートを避けるため生入力で渡す
+    run bash -c "printf '%s' \"g'i't push origin main\" | '$HOOK'"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"git-push"* ]]
+}
+
+@test "hook: 無効 ERE 混入 policy は corrupt→fail-closed scoped で danger を block（end-to-end）" {
+    jq '.gates[2].match.any_re=["*terraform"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "printf '%s' '$(_json "terraform apply -auto-approve")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"fail-closed"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

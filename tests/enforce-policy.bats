@@ -169,6 +169,24 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 1 ]
 }
 
+@test "match: クォート/エスケープ/\${IFS} 難読化を de-obfuscate して捕捉する" {
+    _use_example
+    run bash -c "source '$LIB' && n=\$(ep_normalize \"g'i't push origin main\"); ep_match_gate \"\$n\""
+    [[ "$output" == "git-push" ]]
+    run bash -c "source '$LIB' && n=\$(ep_normalize 'git p\\ush origin main'); ep_match_gate \"\$n\""
+    [[ "$output" == "git-push" ]]
+    run bash -c "source '$LIB' && n=\$(ep_normalize 'git\${IFS}push origin main'); ep_match_gate \"\$n\""
+    [[ "$output" == "git-push" ]]
+    run bash -c "source '$LIB' && n=\$(ep_normalize \"terra'f'orm apply\"); ep_match_gate \"\$n\""
+    [[ "$output" == "deploy" ]]
+}
+
+@test "match: 正当なクォート引数は過剰 block しない（git commit -m \"deploy stuff\"）" {
+    _use_example
+    run bash -c "source '$LIB' && n=\$(ep_normalize 'git commit -m \"deploy stuff\"'); ep_match_gate \"\$n\""
+    [ "$status" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # subject 抽出 / marker base（外部コマンド無し）
 # ---------------------------------------------------------------------------
@@ -407,6 +425,13 @@ _stub_gh() {  # $1 = stdout として返す文字列
 
 @test "health: gate の any_re が無効 ERE なら corrupt（黙って無効化＝fail-open を防ぐ）" {
     jq '.gates[0].match.any_re=["broken(re"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: 先頭量化子 ERE (*terraform) も corrupt（bash =~ と同一エンジンで検証＝grep 乖離回避）" {
+    # grep -qE はこれを valid 扱いするが bash [[ =~ ]] は rc=2。実マッチエンジンに揃えて検出する。
+    jq '.gates[2].match.any_re=["*terraform"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
     run bash -c "source '$LIB' && ep_policy_health"
     [[ "$output" == "corrupt" ]]
 }

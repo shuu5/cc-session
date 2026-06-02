@@ -270,6 +270,15 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 
 健全と再確認された点（誤検出として却下含む）: 決定性・hook↔helper の marker 名一致・SHA/subject の fail-closed 伝播（exit 3/4）・argv injection 防御・`%q`・`_ep_slug` のパストラバーサル無効化・lib が marker を作らない（C-4b は lib レベルで SOLID）・ReDoS なし。
 
+#### 第2ラウンド検証（修正コミット後・実プローブ）
+
+マッチングのコア（境界 ERE・command-hash・ERE 検証・fail-closed 経路）を実質変更したため、修正面に絞った第2ラウンド検証を実施し、さらに以下を発見・対処（260/260 GREEN）:
+
+- **[CRIT] ERE 検証エンジン乖離**: health の ERE 構文検証が `grep -qE` だったため、先頭量化子 `*terraform` 等を grep は valid 扱い（rc=1）する一方 bash `[[ =~ ]]` は rc=2 で扱い、無効 ERE の gate が corrupt 化されず**沈黙失効**（fail-open）。→ **検証を実マッチと同一エンジン（bash `[[ =~ ]]` の rc=2）へ統一**。`broken(re`/`[unclosed` だけでなく先頭量化子も検出。
+- **[CRIT] シェル難読化での gate 貫通**: `g'i't push`・`git p\ush`・`git${IFS}push`・`terra'f'orm apply` 等が正規化後もリテラルのまま残り gate を外せた（builtin danger も同様）。→ **ep_normalize に de-obfuscate を追加**（`"' \` 除去＋`${IFS}`→空白）。これで引用符/エスケープ/`${IFS}` を捕捉。
+- **[残存・脅威モデル外]**: 変数間接（`m=push; git $m`）・コマンド置換 `$(...)` は実行なしに解決できず、本マッチャ（および同型のグローバル `git-destructive-guard.sh`）の原理的限界。**本層の脅威モデルは「沈黙の・偶発的な自己認可の防止＋摩擦＋可監査性」（Position B）**であり、決然と回避する LLM（難読化・変数間接・marker 直接 touch・Write）は対象外と確定（C-4b と整合）。暗号学的barrierが必要なら marker dir の権限分離等の別設計が要る（将来課題）。
+- **[要方針確認・LOW]**: pr-merge marker は同一 PR・同一 head SHA ならマージ方式フラグ（`--squash`/`--admin` 等）を区別しない。`--squash` の unlock が TTL 内に `--admin`（レビュー要件 bypass）も認可しうる。許容可否は運用方針判断（フラグを keying に含めるかはユーザー確定事項）。
+
 ---
 
 ## 10. 参考：現行実装の所在（変更前の状態）

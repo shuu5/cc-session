@@ -189,6 +189,7 @@ enforce:     auto | confirm | hard
 gate:        <hard の場合のみ: ブロック対象のツール/コマンド、例 "gh pr merge", "git push", "git merge">
 marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .claude-session/pr-<N>-reviewed>
 ```
+> **注**: 上の `marker` 例は §9.6 C-4a で **操作インスタンス単位**（`pr-<N>-<sha8>-reviewed`、PR番号＋head SHA で keying）に精緻化されている。grilling 後は §9.6 が優先。
 
 ### 9.3 強制機構（hard）
 - **PreToolUse hook** が `gate` にマッチするツール呼び出しを横取りし、`marker` が存在しなければ `decision: block`＋代替ルート提示で拒否。
@@ -221,7 +222,11 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 - **C-7 bypass = 人間操作のみの多層**。通常=marker 作成、緊急=policy 削除/空化 or `SESSION_ENFORCE_OFF=1` を**ユーザーが**セット。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
 - **C-8 登録先 = cc-session `hooks.json` に PreToolUse:Bash 追加**（`${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pretooluse-enforce.sh`）。policy-presence opt-in で no-op になるため全プロジェクト波及は無害。**グローバル `settings.json` は触らない**。既存グローバル `git-destructive-guard.sh` と共存（両者 PreToolUse:Bash、いずれかが deny で成立、条件が別）。
 - **C-9 gate 対象 = Bash コマンド限定スタート**。既知 hard gate（merge/push/deploy）は全て Bash。Edit/Write は拡散的で §9.4 の単一 gate-point を満たさず hard 不適。MCP は `tool_input` スキーマがサーバ毎で要確認のため後回し（policy は将来拡張可能に設計）。
-- **policy フォーマット（実装時最終化）**: JSON 推奨（jq 既使用・`window-manifest.json` と一貫・追加依存なし）。yaml は人間編集性で候補だがパーサ依存増のため非推奨。可逆な実装詳細。
+
+補足（C 番号外・実装時に最終化する細部）:
+
+- **policy フォーマット**: JSON 推奨（jq 既使用・`window-manifest.json` と一貫・追加依存なし）。yaml は人間編集性で候補だがパーサ依存増のため非推奨。可逆な実装詳細。
+- **コマンドマッチの誤爆対策**: gate マッチは部分文字列/正規表現一致のため、flag 名や gate 語を含む `grep`/`echo`/コメント等を誤ブロックしうる（テンプレ `git-destructive-guard.sh` 自身が L10 で同リスクを注記。本レビュー中に実際に発生）。`git-destructive-guard.sh` の**空白正規化＋コメント除去**（`tr -s` ＋ `#` 以降除去）を踏襲し、残る誤爆は C-7 bypass ＋ C-3 の精緻な人間 ratified gate パターンで緩和する。
 
 hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 
@@ -233,8 +238,8 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 
 派生実装タスク（Phase-2、着手は別セッション）:
 
-- **P2-T1** policy フォーマット確定＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチの SSOT）
-- **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（上記判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2）
+- **P2-T1** policy フォーマット確定（`enforce-policy.json` に確定すれば C-5 の opt-in 存在チェック glob が具体化）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチの SSOT）
+- **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（上記判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策・上記補足〕）
 - **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録
 - **P2-T4** `enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用）
 - **P2-T5** `/session:enforce` skill（認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）

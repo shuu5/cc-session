@@ -2,8 +2,9 @@
 # enforce-unlock — 操作インスタンス marker を作成し、危険操作を「1 回だけ」認可する生シェル helper。
 #
 # 重要（C-4b / C-10）: これは **人間がレビュー等を済ませた上で生シェルから実行する** もの。
-#   Claude（LLM）はこのスクリプトを呼ぶコードパスを持たない＝LLM が自己認可できないことが
-#   hard 強制の実体。pretooluse-enforce.sh が block 時に stderr で提示する unlock コマンドの
+#   信頼境界は「人間が生シェルで叩く規律」＋摩擦＋可監査性であって、技術的不可能性ではない
+#   （marker は空ファイルで Claude も技術的には作成可能。本層が防ぐのは沈黙の・偶発的な自己認可）。
+#   pretooluse-enforce.sh が block 時に stderr で提示する unlock コマンドの
 #   ergonomic な代替（SHA を再導出して「現在の操作インスタンス」を認可する）。
 #
 # marker 名は enforce-policy.sh の ep_marker_name で導出する＝hook が探す名前と必ず一致する。

@@ -6,6 +6,7 @@
 ROOT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 UNLOCK="$ROOT_DIR/scripts/enforce-unlock"
 HOOK="$ROOT_DIR/scripts/hooks/pretooluse-enforce.sh"
+LIB="$ROOT_DIR/scripts/lib/enforce-policy.sh"
 EXAMPLE="$ROOT_DIR/architecture/enforce-policy.example.json"
 
 setup() {
@@ -46,10 +47,12 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 66 ]
 }
 
-@test "unlock: git-push（sha_keyed=false）は marker を作成し exit 0" {
+@test "unlock: git-push（command-hash）は marker を作成し exit 0" {
+    local marker
+    marker=$(bash -c "source '$LIB' && ep_marker_name git-push 'git push origin main'")
     run "$UNLOCK" git-push "git push origin main"
     [ "$status" -eq 0 ]
-    [ -e "$ENFORCE_MARKER_DIR/git-push-push-main" ]
+    [ -e "$ENFORCE_MARKER_DIR/$marker" ]
     [[ "$output" == *"認可しました"* ]]
 }
 

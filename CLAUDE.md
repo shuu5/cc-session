@@ -48,7 +48,7 @@
 `[hard候補]`（gate-point を持ち、わずかな歪みも許せない命令）を、PreToolUse(Bash) hook が **deny-block** で強制する層。設計 SSOT は `architecture/ready-compaction-redesign.md §9.6`、フォーマット/マッチ/marker 導出の SSOT は `scripts/lib/enforce-policy.sh`。
 
 - **opt-in は policy ファイルの存在**（`$PWD/.claude-session/enforce-policy.json`）。不在/空のプロジェクトでは hook は no-op（allow）＝全プロジェクトへの波及は無害。
-- **認可（gate 定義）と unlock（許可）を分離**: `/session:enforce` が `[hard候補]`→gate を **LLM 提案 → 人間確定**で policy へ書く（authoring 専用）。実行時の unlock は人間が生シェルで `scripts/enforce-unlock <gate> "<command>"` を叩いて操作インスタンス marker を作る。**Claude は marker を作るコードパスを持たない**＝LLM が自己認可できないことが hard 性の実体。
+- **認可（gate 定義）と unlock（許可）を分離**: `/session:enforce` が `[hard候補]`→gate を **LLM 提案 → 人間確定**で policy へ書く（authoring 専用）。実行時の unlock は人間が生シェルで `scripts/enforce-unlock <gate> "<command>"`（または block 時に提示される `touch`）を叩いて操作インスタンス marker を作る。lib は marker を作らない（読み取り専用）が、marker は空ファイルなので Claude も技術的には作成可能。本層が保証するのは「**沈黙の・偶発的な自己認可の防止**」（必ず block→人間に surface＋可監査な明示操作）であって、決然と回避する LLM を暗号学的に止めるものではない（信頼境界は人間が生シェルで叩く規律）。
 - **判定フロー**: policy 不在/`enforce:false`→allow ／ gate 不一致→allow ／ 有効 marker 在り→allow ／ marker 不在→block(exit 2)＋unlock 案内 ／ policy 破損・jq 不在→**fail-closed scoped**（内蔵 danger list のみ block）。
 - **marker は操作インスタンス単位**（例 `pr-merge-pr-3-sha-<head8>`）。対象や head SHA が変われば marker 名も変わり自動で再 gate（「一度で永久解除」を防ぐ）。
 - **緊急 bypass は人間操作のみ**: `SESSION_ENFORCE_OFF=1` の export か policy 削除/空化。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。

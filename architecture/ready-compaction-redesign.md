@@ -223,7 +223,7 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 - **C-2 policy の SSOT = 独立永続ファイル** `$PWD/.claude-session/enforce-policy.*`。`[hard候補]` タグは**検出トリガのみ**、`/session:enforce` がそこから policy へ materialize。working-memory 直読みは PostCompact で consumed へ mv され揮発し §9.4「config だから消えない」優位と矛盾するため**不採用**。
 - **C-3 gate 変換 = LLM 提案 → 人間確定**。directive の "gate:" ヒントから LLM が下案、人間が確認/編集して policy ファイルへ確定。**人間 ratified が信頼境界**（取りこぼし＝危険操作を黙って通す最悪 failure を防ぐ）。
 - **C-4a marker scope = 操作インスタンス単位**（例 `pr-<N>-<sha8>-reviewed`、PR番号＋head SHA で keying）。対象/SHA が変われば再 gate ＝「一度で永久解除」を構造的に防止。
-- **C-4b / C-10 marker 作成 = 人間の生シェルのみ**。Claude は marker を書く**コードパスを持たない**。`/session:enforce` は**認可（policy 生成）専用**で unlock は担わない。unlock は hook が stderr で提示する helper を**ユーザーが `!` で実行**。これが hard 性（LLM が自己認可不可）の実体。
+- **C-4b / C-10 marker 作成 = 人間の生シェルのみ（規律ベースの信頼境界）**。`/session:enforce` は**認可（policy 生成）専用**で unlock は担わない。unlock は hook が stderr で提示する helper / `touch` を**ユーザーが `!` で実行**。lib は marker を作るコードパスを持たない（読み取り専用）が、**marker は単なる空ファイルなので Claude も技術的には Bash/Write で作成可能**。したがって本層が保証するのは「沈黙の・偶発的な自己認可の防止」＝Claude は通常 marker を持たず block され、人間に必ず surface する＋認可は可監査な明示操作になる、という**摩擦と可視性**であって、決然と回避する LLM を**暗号学的に**止めるものではない（marker dir の権限分離等は将来の hardening 課題。§9.7 の adversarial レビュー HIGH#5 参照）。
 - **C-5 opt-in = policy ファイルの存在**。不在/空 → hook は **no-op（allow）**。専用 marker も `.compaction-enabled` 流用も不要（流用は compaction 使用済み全プロジェクトで誤ブロック）。
 - **C-6 障害時 = fail-closed (scoped)**。policy 在りで破損/jq 不在/hook 障害時は**内蔵 danger list**（`git push`/`git merge`/`gh pr merge`/deploy 系）のみ block ＋大警告、他 Bash は通す。compaction フック（fail-open）とは**あえて規約を分ける**（性質が違うため）。
 - **C-7 bypass = 人間操作のみの多層**。通常=marker 作成、緊急=policy 削除/空化 or `SESSION_ENFORCE_OFF=1` を**ユーザーが**セット。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
@@ -253,6 +253,22 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 - ✅ **P2-T6** ready-compaction router 連携（`skills/ready-compaction/SKILL.md` の carrier/router 行を更新し `[hard候補]` 検出時に `/session:enforce` を提案）。
 - ✅ **P2-T7** doc 整合（本節・§6・`compaction-memory-model.md`・`README.md`・`CLAUDE.md`・両 `SKILL.md`）。
 - ✅ **P2-T8** bats（policy parse / gate match / marker 有無 / TTL / fail-closed scoped / opt-in no-op / unlock helper / hook 統合）。`tests/{enforce-policy,pretooluse-enforce,enforce-unlock}.bats` に分割。
+
+### 9.7 実装後 adversarial レビューの結果（2026-06-02・マージ前ゲート）
+
+[hard候補] 命令「PR merge 前に adversarial レビュー」に従い、実装直後に 6 次元（bypass / fail-closed / 誤爆 / marker 健全性 / shell 安全 / spec 準拠）× 各 finding 懐疑検証のレビューを実施。判定は **CONDITIONAL**（現状マージ不可）で、以下の critical/high を修正してから再 GREEN（255/255）:
+
+- **[CRIT] `#` による 1 文字 bypass**: `ep_normalize` がコメント（`#` 以降）を除去していたため `echo "#" && git push` で gate 語を判定文字列から落とせた。→ **コメント保持マッチへ修正**（git-destructive-guard の NORM 意味論に合わせる）。over-block 側に倒すが安全。
+- **[CRIT] fail-closed 不達 2 系統**: (a) 無効 ERE の gate が `[[ =~ ]]` で常に偽になり黙って無効化（health=active のまま）→ **health で全 ERE を構文検証し corrupt 化**。(b) session-env のみ欠落で空 health が hook の `case` を素通り → **lib に ENFORCE_* 安全デフォルトの再フォールバック＋hook の `case` に `*)` fail-closed**。
+- **[HIGH] gate 語彙の表記揺れ貫通**: 絶対パス `/usr/bin/gh`・`git -C`・フラグ・引用符ラップで gate を外せた（builtin danger も同様）→ **境界を `(^|[^[:alnum:]_-])…([^[:alnum:]_-]|$)` ＋ `( +[^ ]+)*` フラグ吸収へ強化**。
+- **[HIGH] git-push の認可スコープ漏洩**: token subject_re が flag 有無で remote/branch を取り違え、`origin main` の承認が `origin 全 branch` へ漏れた → **git-push を command-hash 戦略へ**（コマンド全体＝remote・refspec・force 有無を keying）。
+- **[HIGH] C-4b 文言の乖離**: marker は空ファイルで Claude も技術的に作成可能 → **doc を正直化**（信頼境界は「人間が生シェルで叩く規律」＋摩擦＋可監査性。沈黙の自己認可は防ぐが暗号学的barrierではない。C-4b 注記参照）。
+
+あわせて MEDIUM/LOW を一部前倒し: pr-merge subject_re の flag-before-number 対応（`merge[^0-9]*#?([0-9]+)`）、裸 `deploy` トークン除去（`git commit -m deploy` 誤爆解消）、subject 検証の先頭ダッシュ禁止、`ep_marker_valid` の stat 失敗時 block（fail-open 是正）。
+
+**残る follow-up（MEDIUM・後追い可）**: settings.json env 経由の恒久 OFF（C-7 の単一 env 依存）、TTL 未指定 gate の無期限化（authoring 落とし穴）、any_re 無し gate の許容、marker dir の権限分離による hard 化（HIGH#5 の技術強制への格上げ）。
+
+健全と再確認された点（誤検出として却下含む）: 決定性・hook↔helper の marker 名一致・SHA/subject の fail-closed 伝播（exit 3/4）・argv injection 防御・`%q`・`_ep_slug` のパストラバーサル無効化・lib が marker を作らない（C-4b は lib レベルで SOLID）・ReDoS なし。
 
 ---
 

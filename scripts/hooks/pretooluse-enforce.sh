@@ -41,16 +41,16 @@ NORM=$(ep_normalize "$CMD")
 case "$(ep_policy_health)" in
     absent|off)
         exit 0 ;;                                    # step1: opt-in 不成立 → allow
-    corrupt|nojq|badversion)                         # step5: fail-closed (scoped)
-        if ep_builtin_danger_match "$NORM"; then
-            echo "DENIED(enforce/fail-closed): policy を評価できません（破損 / jq 不在 / version 超過）。" >&2
+    active)
+        : ;;                                         # 正常稼働 → step2 へ
+    *)                                               # step5: corrupt|nojq|badversion|未知/空 → fail-closed (scoped)
+        if ep_builtin_danger_match "$NORM"; then     # ★未知/空 health もここで安全側に倒す（fail-open 防止）
+            echo "DENIED(enforce/fail-closed): policy を評価できません（破損 / jq 不在 / version 超過 / 判定不能）。" >&2
             echo "  内蔵 danger list に該当するため安全側で block しました。" >&2
             echo "  policy を修復するか、緊急時は人間が生シェルで SESSION_ENFORCE_OFF=1 を設定してください。" >&2
             exit 2
         fi
         exit 0 ;;                                    # danger 以外は通す（scoped）
-    active)
-        : ;;
 esac
 
 # --- step2: gate マッチ ---

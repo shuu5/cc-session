@@ -92,8 +92,11 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
 
 @test "hook: git-push の marker 作成後は allow" {
     _use_example
+    # git-push は command-hash 戦略のため marker 名を lib から導出して touch（hook↔lib 一致）
+    local marker
+    marker=$(bash -c "source '$LIB' && ep_marker_name git-push 'git push origin main'")
     mkdir -p "$ENFORCE_MARKER_DIR"
-    touch "$ENFORCE_MARKER_DIR/git-push-push-main"
+    touch "$ENFORCE_MARKER_DIR/$marker"
     run bash -c "printf '%s' '$(_json "git push origin main")' | '$HOOK'"
     [ "$status" -eq 0 ]
 }

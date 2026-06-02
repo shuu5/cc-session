@@ -23,13 +23,22 @@ _ENFORCE_POLICY_SH_SOURCED=1
 _EP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./session-env.sh
 source "$_EP_LIB_DIR/session-env.sh" 2>/dev/null || true
+# session-env.sh だけが欠落しても set -u 下で unbound にならぬよう安全デフォルトへ再フォールバック
+# （これが無いと health が空出力 → hook の case 素通り → 危険操作 allow という fail-open になる）。
+: "${WORKING_MEMORY_DIR:=$PWD/.claude-session}"
+: "${ENFORCE_POLICY_FILE:=$WORKING_MEMORY_DIR/enforce-policy.json}"
+: "${ENFORCE_MARKER_DIR:=$WORKING_MEMORY_DIR/enforce-markers}"
+: "${ENFORCE_SHA_TIMEOUT:=5}"
+export WORKING_MEMORY_DIR ENFORCE_POLICY_FILE ENFORCE_MARKER_DIR ENFORCE_SHA_TIMEOUT
 
 # --- SSOT 定数（export） ---
 # lib が解釈できる最大 policy version。これを超える version は badversion → fail-closed。
 ENFORCE_POLICY_VERSION_MAX=1
 # C-6 内蔵 danger list（policy 非依存・純 ERE）。policy 読込不能時の scoped fail-closed で使う。
 # policy 例の gate 語彙（pr-merge / git-push / deploy）と同期させること（tests で回帰検出）。
-ENFORCE_BUILTIN_DANGER_REGEX='(^| )gh pr merge( |$)|(^| )git push( |$)|(^| )git merge( |$)|(^| )(kubectl|helm) (apply|install|upgrade)( |$)|(^| )terraform apply( |$)|(^| )serverless deploy( |$)|(^| )deploy( |$)'
+# 境界は (^|[^[:alnum:]_-]) … ([^[:alnum:]_-]|$) ＝ 絶対パス(/usr/bin/gh)・引用符ラップ('terraform apply')・
+# 区切り(;・&&)前置でも捕捉。( +[^ ]+)* で間のフラグ/サブコマンド(git -C / kubectl --context)を吸収する。
+ENFORCE_BUILTIN_DANGER_REGEX='(^|[^[:alnum:]_-])gh( +[^ ]+)* +pr +merge([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])git( +[^ ]+)* +push([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])git( +[^ ]+)* +merge([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])(kubectl|helm)( +[^ ]+)* +(apply|install|upgrade)([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])terraform( +[^ ]+)* +apply([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])serverless( +[^ ]+)* +deploy([^[:alnum:]_-]|$)'
 export ENFORCE_POLICY_VERSION_MAX ENFORCE_BUILTIN_DANGER_REGEX
 
 # ep_policy_file
@@ -59,17 +68,28 @@ ep_policy_health() {
         else "active" end
     ' "$f" 2>/dev/null) || { echo corrupt; return 0; }
     [ -n "$probe" ] || { echo corrupt; return 0; }
+    if [ "$probe" = "active" ]; then
+        # 全 gate の ERE（any_re / subject_re / sha_validate_re）が実際にコンパイルできるか検証する。
+        # 無効 ERE は [[ =~ ]] で決して真にならず gate が「黙って無効化」され危険操作を allow に倒す。
+        # これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ落とす。
+        local re
+        while IFS= read -r re; do
+            [ -z "$re" ] && continue
+            grep -qE -- "$re" </dev/null 2>/dev/null
+            [ $? -eq 2 ] && { echo corrupt; return 0; }
+        done < <(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null)
+    fi
     echo "$probe"
 }
 
 # ep_normalize <raw_command>
-#   stdout: 空白正規化（tr -s '[:space:]' ' '）後にコメント（# 以降）を除去した文字列。exit 0。
-#   git-destructive-guard.sh と同一意味論（先頭/末尾の空白は trim しない＝テンプレ準拠）。
-#   gate マッチの誤爆対策の中核（二重スペース・コメント偽装を無効化）。
+#   stdout: 空白正規化（tr -s '[:space:]' ' '＝タブ・連続スペース・改行を単一スペースへ）した文字列。exit 0。
+#   ★コメント（# 以降）は **除去しない**。git-destructive-guard.sh の危険判定が NORM＝コメント保持で
+#   行うのに倣う。除去すると `echo "#" && git push` のように先頭 `#` 以降の実コマンド（&&/;/改行で実行
+#   される push/merge/deploy）を判定文字列から落とし、marker 不要・自己認可不要で全 gate を 1 文字で
+#   回避できてしまう（fail-open）。保持側に倒すと `ls # gh pr merge` 等を過剰 block しうるが安全側。
 ep_normalize() {
-    local norm
-    norm=$(printf '%s' "$1" | tr -s '[:space:]' ' ')
-    printf '%s' "${norm%%#*}"
+    printf '%s' "$1" | tr -s '[:space:]' ' '
 }
 
 # ep_match_gate <normalized_command>
@@ -172,8 +192,8 @@ ep_marker_sha_suffix() {
     local gid="$1" subject="$2" sha_keyed
     sha_keyed=$(ep_gate_field "$gid" '.key.sha_keyed')
     [ "$sha_keyed" = "true" ] || { printf ''; return 0; }
-    # argv に埋め込む subject を検証（shell/argv injection 面の縮小）
-    printf '%s' "$subject" | grep -qE '^[0-9A-Za-z._/-]+$' || return 3
+    # argv に埋め込む subject を検証（shell/argv injection 面の縮小。先頭ダッシュ禁止＝option-injection 抑止）
+    printf '%s' "$subject" | grep -qE '^[0-9A-Za-z._/][0-9A-Za-z._/-]*$' || return 3
     local -a argv=()
     local part
     while IFS= read -r part; do
@@ -230,7 +250,8 @@ ep_marker_valid() {
     [ -e "$path" ] || return 1
     ttl=$(ep_gate_ttl "$gid")
     [ -z "$ttl" ] && return 0
-    mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null) || return 0
+    mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null) || return 1
+    [ -n "$mtime" ] || return 1   # mtime 取得不能なら TTL を確認できない → 安全側で block（fail-closed）
     now=$(date +%s)
     [ $((mtime + ttl)) -ge "$now" ]
 }

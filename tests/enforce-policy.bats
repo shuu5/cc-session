@@ -101,9 +101,9 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [[ "$output" == "git push origin" ]]
 }
 
-@test "normalize: # 以降のコメントを除去" {
+@test "normalize: コメント(#)は保持する（除去すると # 1 文字で全 gate を bypass できるため）" {
     run bash -c "source '$LIB' && ep_normalize 'gh pr merge 3 # ship it'"
-    [[ "$output" == "gh pr merge 3 " ]]
+    [[ "$output" == "gh pr merge 3 # ship it" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -136,16 +136,36 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ -z "$output" ]
 }
 
-@test "match: コメント内の gate 語は誤爆しない（正規化後不一致）" {
+@test "match: コメント内/引用符内の gate 語は安全側で over-block（# bypass 封じの対価）" {
+    # コメントを保持してマッチするので `ls # gh pr merge 3` も gate ヒットする（過剰 block＝安全側）。
+    # これにより `echo "#" && git push` のような # bypass を封じている（under-block より安全）。
     _use_example
-    run bash -c "source '$LIB' && n=\$(ep_normalize 'ls # gh pr merge 3'); ep_match_gate \"\$n\""
-    [ "$status" -eq 1 ]
+    run bash -c "source '$LIB' && ep_match_gate 'ls # gh pr merge 3'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "pr-merge" ]]
 }
 
-@test "match: 引用符内の gate 語は any_re アンカーで誤爆しない（echo \"gh pr merge 3\"）" {
+@test "bypass 封じ: '# 以降' に隠した gate 語も検出する（# の 1 文字回避を防ぐ）" {
     _use_example
-    # gh の直前が \" のため any_re の (^| ) 境界に一致せず gate ヒットしない（誤爆保護）
-    run bash -c "source '$LIB' && ep_match_gate 'echo \"gh pr merge 3\"'"
+    # 改行を空白化しても # 以降を落とさないので、2 つ目以降のコマンドの gate 語も捕捉される
+    run bash -c "source '$LIB' && ep_match_gate 'echo hi # x git push origin main'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "git-push" ]]
+}
+
+@test "match: 絶対パス・git -C・引用符ラップでも gate を外さない（C-3 強化境界）" {
+    _use_example
+    run bash -c "source '$LIB' && ep_match_gate '/usr/bin/gh pr merge 3'"
+    [[ "$output" == "pr-merge" ]]
+    run bash -c "source '$LIB' && ep_match_gate 'git -C /repo push origin main'"
+    [[ "$output" == "git-push" ]]
+    run bash -c "source '$LIB' && ep_match_gate \"bash -c 'terraform apply'\""
+    [[ "$output" == "deploy" ]]
+}
+
+@test "match: 裸 deploy トークンは誤爆させない（git commit -m deploy は gate 不一致）" {
+    _use_example
+    run bash -c "source '$LIB' && ep_match_gate 'git commit -m deploy'"
     [ "$status" -eq 1 ]
 }
 
@@ -172,10 +192,17 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 4 ]
 }
 
-@test "marker_base: token 戦略 'git push origin main' → git-push-push-main" {
+@test "marker_base: git-push は command-hash 戦略（コマンド全体で keying＝認可スコープ漏洩を防ぐ）" {
     _use_example
+    # prefix は git-push-cmd-、かつ別 refspec は別 marker（main 承認が develop を認可しない＝C-4a）
     run bash -c "source '$LIB' && ep_marker_base git-push 'git push origin main'"
-    [[ "$output" == "git-push-push-main" ]]
+    [[ "$output" == git-push-cmd-* ]]
+    local m_main="$output"
+    run bash -c "source '$LIB' && ep_marker_base git-push 'git push origin develop'"
+    [ "$m_main" != "$output" ]
+    # 同一コマンドは同一 marker（決定論＝unlock 後に同 push が通る）
+    run bash -c "source '$LIB' && a=\$(ep_marker_base git-push 'git push origin main'); b=\$(ep_marker_base git-push 'git push origin main'); [ \"\$a\" = \"\$b\" ] && echo same"
+    [[ "$output" == "same" ]]
 }
 
 @test "marker_base: command-hash 戦略はコマンド差で異なる（再 gate）" {
@@ -359,8 +386,40 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 1 ]
 }
 
+@test "builtin_danger: 絶対パス・git -C も捕捉（最後の防壁を表記揺れで貫通させない）" {
+    run bash -c "source '$LIB' && ep_builtin_danger_match '/usr/bin/git push origin main'"
+    [ "$status" -eq 0 ]
+    run bash -c "source '$LIB' && ep_builtin_danger_match 'git -C /repo push origin main'"
+    [ "$status" -eq 0 ]
+    run bash -c "source '$LIB' && ep_builtin_danger_match 'kubectl --context prod apply ./m.yaml'"
+    [ "$status" -eq 0 ]
+}
+
 @test "builtin_danger SSOT 同期: 例 policy の各 gate 代表コマンドが内蔵 danger list にも一致（W5 回帰）" {
-    run bash -c "source '$LIB' && for c in 'gh pr merge 3' 'git push origin main' 'terraform apply' 'deploy'; do ep_builtin_danger_match \"\$c\" || { echo \"MISS: \$c\"; exit 1; }; done; echo allhit"
+    run bash -c "source '$LIB' && for c in 'gh pr merge 3' 'git push origin main' 'terraform apply' 'serverless deploy'; do ep_builtin_danger_match \"\$c\" || { echo \"MISS: \$c\"; exit 1; }; done; echo allhit"
     [ "$status" -eq 0 ]
     [[ "$output" == "allhit" ]]
+}
+
+# ---------------------------------------------------------------------------
+# fail-closed 強化（無効 ERE / session-env 欠落フォールバック）
+# ---------------------------------------------------------------------------
+
+@test "health: gate の any_re が無効 ERE なら corrupt（黙って無効化＝fail-open を防ぐ）" {
+    jq '.gates[0].match.any_re=["broken(re"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: subject_re が無効 ERE でも corrupt" {
+    jq '.gates[0].key.subject_re=["[unclosed"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "fallback: ENFORCE_* 未設定でも lib が安全デフォルトを設定する（unbound 回避）" {
+    # session-env.sh 欠落相当: ENFORCE_* を unset した状態で source しても空にならない
+    run bash -c "unset ENFORCE_POLICY_FILE ENFORCE_MARKER_DIR ENFORCE_SHA_TIMEOUT WORKING_MEMORY_DIR; source '$LIB'; set -u; printf '%s|%s|%s' \"\$ENFORCE_POLICY_FILE\" \"\$ENFORCE_MARKER_DIR\" \"\$ENFORCE_SHA_TIMEOUT\""
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/.claude-session/enforce-policy.json|"*"/.claude-session/enforce-markers|5"* ]]
 }

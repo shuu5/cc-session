@@ -11,11 +11,11 @@
       "description": "PR merge は人間レビュー gate 通過後のみ許可する",
       "match": {
         "all": ["gh", "pr", "merge"],
-        "any_re": ["(^| )gh +pr +merge( |$)"]
+        "any_re": ["(^|[^[:alnum:]_-])gh( +[^ ]+)* +pr +merge([^[:alnum:]_-]|$)"]
       },
       "key": {
         "strategy": "token",
-        "subject_re": ["merge +#?([0-9]+)", "/pull/([0-9]+)"],
+        "subject_re": ["/pull/([0-9]+)", "merge[^0-9]*#?([0-9]+)"],
         "subject_fallback": "deny",
         "subject_prefix": "pr",
         "sha_keyed": true,
@@ -31,23 +31,21 @@
       "description": "push（保護ブランチ / force）は差分確認 gate 通過後のみ許可する",
       "match": {
         "all": ["git", "push"],
-        "any_re": ["(^| )git +push( |$)"]
+        "any_re": ["(^|[^[:alnum:]_-])git( +[^ ]+)* +push([^[:alnum:]_-]|$)"]
       },
       "key": {
-        "strategy": "token",
-        "subject_re": ["push +[^ ]+ +([^ :]+)", "push +([^ :]+)"],
-        "subject_fallback": "literal:HEAD",
-        "subject_prefix": "push",
+        "strategy": "command-hash",
+        "subject_prefix": "cmd",
         "sha_keyed": false
       },
       "marker_ttl_sec": 900,
-      "unlock_hint": "push 先 {subject} への差分を確認した上で承認すること"
+      "unlock_hint": "この push（remote・refspec・force 有無を含むコマンド全体）の差分を確認した上で承認すること"
     },
     {
       "id": "deploy",
       "description": "deploy 系コマンドは対象環境の承認 gate 通過後のみ許可する",
       "match": {
-        "any_re": ["(^| )(terraform +apply|kubectl +apply|helm +(install|upgrade)|serverless +deploy|deploy)( |$)"]
+        "any_re": ["(^|[^[:alnum:]_-])(terraform( +[^ ]+)* +apply|kubectl( +[^ ]+)* +apply|helm( +[^ ]+)* +(install|upgrade)|serverless( +[^ ]+)* +deploy|npm +run +deploy|make +deploy)([^[:alnum:]_-]|$)"]
       },
       "key": {
         "strategy": "command-hash",

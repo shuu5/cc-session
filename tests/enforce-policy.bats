@@ -142,6 +142,13 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 1 ]
 }
 
+@test "match: 引用符内の gate 語は any_re アンカーで誤爆しない（echo \"gh pr merge 3\"）" {
+    _use_example
+    # gh の直前が \" のため any_re の (^| ) 境界に一致せず gate ヒットしない（誤爆保護）
+    run bash -c "source '$LIB' && ep_match_gate 'echo \"gh pr merge 3\"'"
+    [ "$status" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # subject 抽出 / marker base（外部コマンド無し）
 # ---------------------------------------------------------------------------

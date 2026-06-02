@@ -55,7 +55,7 @@
 `ready-compaction` は項目を **2 軸（適用範囲 always/default/effort × 強制 auto/confirm/hard）** で分類し carrier へ委譲する。自前で抱えるのは **effort 一時層（Working Memory）だけ**:
 
 - **恒久命令**（このリポで常に真の手法・規約）→ **このプロジェクトの CLAUDE.md(git) へ追記/修正を昇格提案**（提案のみ。commit は通常フロー。**ユーザースコープのグローバル CLAUDE.md は対象外**＝スキルは自動提案も編集もしない）
-- 横断/インシデントの事実 → doobidoo ／ effort 命令・作業状態 → Working Memory（2 節スキーマ＋carry-forward）／ hard 候補 → `[hard候補]` マーク → `/session:enforce` で gate 昇格を提案（実強制は `pretooluse-enforce.sh`）
+- 横断/インシデントの事実 → doobidoo ／ effort 命令・作業状態 → Working Memory（2 節スキーマ＋carry-forward）／ **discrete・永続タスク → beads（`bd create`）で issue 化**（計画弧は bd issue ID 参照、bd 未導入はフォールバック）／ hard 候補 → `[hard候補]` マーク → `/session:enforce` で gate 昇格を提案（実強制は `pretooluse-enforce.sh`）
 
 2 節スキーマ・タグ書式・carry-forward の SSOT は `scripts/lib/working-memory.sh`。設計詳細は `architecture/compaction-memory-model.md`。
 

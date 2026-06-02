@@ -2,6 +2,13 @@
 
 汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、**ready-compaction**（compaction-prep の policy router 兼 effort 一時層 carrier）、および **enforce**（hard 強制層: PreToolUse(Bash) hook が gate 未通過の危険操作を deny-block する。policy 存在で opt-in）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
+## Beads Issue Tracker (bd)
+
+タスク追跡は **bd (beads)**。SessionStart hook が `bd prime` で全ワークフロー文脈を毎セッション注入する（SSOT = `.beads/PRIME.md`）。本節は bd 未導入時のフォールバック。
+
+- **タスク = beads / 知識 = doobidoo**: 永続・横断の作業は bd issue で追跡。知見は doobidoo に保存し、**`bd remember/recall/memories` は使わない**。
+- 終了前に `bd close` → `bd dolt push`。コードは標準 PR ワークフロー（`main` 直 push 禁止）。
+
 ## レビュー・検証方針（このプロジェクトの必須ルール）
 
 セキュリティ/正しさにクリティカルな変更（`scripts/hooks/` ・ `scripts/lib/` ・ enforce 層 ・ compaction フック等）は、**main へ merge する前に ultracode の多次元 adversarial レビュー＋検証を必須**とする。

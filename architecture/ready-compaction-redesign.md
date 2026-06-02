@@ -99,7 +99,7 @@
 ## 6. honest な制約（実装でも保持すること）
 
 - **「4.8 で load-bearing」は反証不能のまま**。ユーザーは毎回スキルを使うので反例が無い。first-principles（要約器が ambient 命令を落とす）で正当化している。唯一の検証＝低リスク長セッションで一度スキルを抜いて compact し挙動観察。実装はこの不確実性を前提に「過剰投資しない」。
-- **`confirm` は Phase-1 では soft 止まり**（LLM が確認を求めるだけ。firm 化＝hook＝Phase-2）。
+- **`confirm` は soft 止まり**（LLM が確認を求めるだけ）。**confirm の firm 化（hook での ask 強制）は Phase-2 スコープ外**＝当面 soft 維持（§9.6 C-1 で確定。Claude Code ネイティブ権限プロンプトと機能が重複するため）。Phase-2 が hook 化するのは **hard のみ**。
 - **hard 化は gate-point（単一の不可逆ツール呼び出し）を持つ命令のみ**可能。「merge 前にレビュー」は `gh pr merge` という gate があり可。「実装は spawn+feature-dev」は多数の Edit/Write に分散し gate が無く hard 不可 → default/auto に格下げ。
 
 ---
@@ -189,6 +189,7 @@ enforce:     auto | confirm | hard
 gate:        <hard の場合のみ: ブロック対象のツール/コマンド、例 "gh pr merge", "git push", "git merge">
 marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .claude-session/pr-<N>-reviewed>
 ```
+> **注**: 上の `marker` 例は §9.6 C-4a で **操作インスタンス単位**（`pr-<N>-<sha8>-reviewed`、PR番号＋head SHA で keying）に精緻化されている。grilling 後は §9.6 が優先。
 
 ### 9.3 強制機構（hard）
 - **PreToolUse hook** が `gate` にマッチするツール呼び出しを横取りし、`marker` が存在しなければ `decision: block`＋代替ルート提示で拒否。
@@ -202,6 +203,49 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 ### 9.5 router 連携
 - ready-compaction の Step 1 router が `hard候補` を検出 → Phase-2 では「この directive を hook policy に登録するか？」をユーザーに提案 → 承認時に policy 生成＋hook 有効化。
 - policy の登録/生成/有効化を担う小さなコマンド（例 `/session:enforce` 仮称）を Phase-2 で新設する想定。
+
+### 9.6 grilling 後の確定事項（2026-06-02・着手前 grill）
+
+> Phase-1 完了（PR #2 merge, main `7ac6915`）後、Phase-2 着手前に anchor セッション（cc-session main）で grill-me し確定。
+> **以下が §9.1〜§9.5 および §6 の関連記述より優先される。** 実装はこの節に従う。
+> ユーザー判断により**今回は doc 化のみ**（実装は後日・別セッション）。`[confirm]` ゲート（Phase-2 着手はユーザー確認必須）は引き続き有効。
+
+確定した設計判断（C-1〜C-10）:
+
+- **C-1 強制モデル = hard(deny-block) のみ**。confirm は soft 維持で **firm 化は Phase-2 スコープ外**（§6 を本決定に合わせ修正済み。理由: ネイティブ権限プロンプトと重複、スコープ規律）。
+- **C-2 policy の SSOT = 独立永続ファイル** `$PWD/.claude-session/enforce-policy.*`。`[hard候補]` タグは**検出トリガのみ**、`/session:enforce` がそこから policy へ materialize。working-memory 直読みは PostCompact で consumed へ mv され揮発し §9.4「config だから消えない」優位と矛盾するため**不採用**。
+- **C-3 gate 変換 = LLM 提案 → 人間確定**。directive の "gate:" ヒントから LLM が下案、人間が確認/編集して policy ファイルへ確定。**人間 ratified が信頼境界**（取りこぼし＝危険操作を黙って通す最悪 failure を防ぐ）。
+- **C-4a marker scope = 操作インスタンス単位**（例 `pr-<N>-<sha8>-reviewed`、PR番号＋head SHA で keying）。対象/SHA が変われば再 gate ＝「一度で永久解除」を構造的に防止。
+- **C-4b / C-10 marker 作成 = 人間の生シェルのみ**。Claude は marker を書く**コードパスを持たない**。`/session:enforce` は**認可（policy 生成）専用**で unlock は担わない。unlock は hook が stderr で提示する helper を**ユーザーが `!` で実行**。これが hard 性（LLM が自己認可不可）の実体。
+- **C-5 opt-in = policy ファイルの存在**。不在/空 → hook は **no-op（allow）**。専用 marker も `.compaction-enabled` 流用も不要（流用は compaction 使用済み全プロジェクトで誤ブロック）。
+- **C-6 障害時 = fail-closed (scoped)**。policy 在りで破損/jq 不在/hook 障害時は**内蔵 danger list**（`git push`/`git merge`/`gh pr merge`/deploy 系）のみ block ＋大警告、他 Bash は通す。compaction フック（fail-open）とは**あえて規約を分ける**（性質が違うため）。
+- **C-7 bypass = 人間操作のみの多層**。通常=marker 作成、緊急=policy 削除/空化 or `SESSION_ENFORCE_OFF=1` を**ユーザーが**セット。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
+- **C-8 登録先 = cc-session `hooks.json` に PreToolUse:Bash 追加**（`${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pretooluse-enforce.sh`）。policy-presence opt-in で no-op になるため全プロジェクト波及は無害。**グローバル `settings.json` は触らない**。既存グローバル `git-destructive-guard.sh` と共存（両者 PreToolUse:Bash、いずれかが deny で成立、条件が別）。
+- **C-9 gate 対象 = Bash コマンド限定スタート**。既知 hard gate（merge/push/deploy）は全て Bash。Edit/Write は拡散的で §9.4 の単一 gate-point を満たさず hard 不適。MCP は `tool_input` スキーマがサーバ毎で要確認のため後回し（policy は将来拡張可能に設計）。
+
+補足（C 番号外・実装時に最終化する細部）:
+
+- **policy フォーマット**: JSON 推奨（jq 既使用・`window-manifest.json` と一貫・追加依存なし）。yaml は人間編集性で候補だがパーサ依存増のため非推奨。可逆な実装詳細。
+- **コマンドマッチの誤爆対策**: gate マッチは部分文字列/正規表現一致のため、flag 名や gate 語を含む `grep`/`echo`/コメント等を誤ブロックしうる（テンプレ `git-destructive-guard.sh` 自身が L10 で同リスクを注記。本レビュー中に実際に発生）。`git-destructive-guard.sh` の**空白正規化＋コメント除去**（`tr -s` ＋ `#` 以降除去）を踏襲し、残る誤爆は C-7 bypass ＋ C-3 の精緻な人間 ratified gate パターンで緩和する。
+
+hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
+
+1. policy 不在/空 → **allow**（no-op）
+2. command が gate に不一致 → allow
+3. gate 一致 ＆ 操作インスタンス marker 在り → allow
+4. gate 一致 ＆ marker 不在 → **block**（exit 2 ＋ stderr: どの gate か・理由・ユーザーが叩く unlock コマンド）
+5. policy 在り＋破損/jq 不在/障害 → **fail-closed (scoped)**: 内蔵 danger list のみ block＋大警告、他は allow
+
+派生実装タスク（Phase-2、着手は別セッション）:
+
+- **P2-T1** policy フォーマット確定（`enforce-policy.json` に確定すれば C-5 の opt-in 存在チェック glob が具体化）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチの SSOT）
+- **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（上記判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策・上記補足〕）
+- **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録
+- **P2-T4** `enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用）
+- **P2-T5** `/session:enforce` skill（認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）
+- **P2-T6** ready-compaction router 連携（`[hard候補]` 検出時に `/session:enforce` を提案）
+- **P2-T7** doc 整合（本節・§6 修正済・`compaction-memory-model.md`・`SKILL.md`・README）
+- **P2-T8** bats（policy parse / gate match / marker 有無 / fail-closed scoped / opt-in no-op / unlock helper）
 
 ---
 

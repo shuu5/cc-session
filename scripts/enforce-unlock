@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# enforce-unlock — 操作インスタンス marker を作成し、危険操作を「1 回だけ」認可する生シェル helper。
+#
+# 重要（C-4b / C-10）: これは **人間がレビュー等を済ませた上で生シェルから実行する** もの。
+#   信頼境界は「人間が生シェルで叩く規律」＋摩擦＋可監査性であって、技術的不可能性ではない
+#   （marker は空ファイルで Claude も技術的には作成可能。本層が防ぐのは沈黙の・偶発的な自己認可）。
+#   pretooluse-enforce.sh が block 時に stderr で提示する unlock コマンドの
+#   ergonomic な代替（SHA を再導出して「現在の操作インスタンス」を認可する）。
+#
+# marker 名は enforce-policy.sh の ep_marker_name で導出する＝hook が探す名前と必ず一致する。
+# 対象が変われば（PR の head SHA 等）marker 名も変わり、過去の認可は自動失効する（C-4a）。
+#
+# 使い方（生シェルで・! プレフィックス例）:
+#   enforce-unlock pr-merge "gh pr merge 3 --squash"
+#   enforce-unlock git-push "git push origin main"
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/enforce-policy.sh
+source "$SCRIPT_DIR/lib/enforce-policy.sh" 2>/dev/null \
+    || { echo "enforce-unlock: enforce-policy.sh をロードできません: $SCRIPT_DIR/lib/enforce-policy.sh" >&2; exit 1; }
+
+usage() {
+    echo "Usage: enforce-unlock <gate_id> <command...>" >&2
+    echo "  指定 gate・コマンドに対応する操作インスタンス marker を作成し、危険操作を 1 回認可します。" >&2
+    echo "  人間がレビュー等を済ませた上で生シェルから実行してください（Claude は実行しません）。" >&2
+}
+
+[ $# -ge 2 ] || { usage; exit 64; }
+
+GATE="$1"; shift
+CMD="$*"
+NORM=$(ep_normalize "$CMD")
+
+# policy が有効か（不在/破損では認可しても無意味なので止める）
+HEALTH=$(ep_policy_health)
+case "$HEALTH" in
+    active) : ;;
+    absent) echo "enforce-unlock: policy が存在しません（$(ep_policy_file)）。認可対象がありません。" >&2; exit 66 ;;
+    off)    echo "enforce-unlock: policy は enforce:false です。強制が無効のため marker は不要です。" >&2; exit 66 ;;
+    *)      echo "enforce-unlock: policy を評価できません（health=$HEALTH）。先に policy を修復してください。" >&2; exit 66 ;;
+esac
+
+# gate 名とコマンドの取り違え防止: コマンドが当該 gate に一致するか確認
+MATCHED=$(ep_match_gate "$NORM" || true)
+if [ "$MATCHED" != "$GATE" ]; then
+    echo "enforce-unlock: コマンドは gate '$GATE' に一致しません（一致: '${MATCHED:-なし}'）。" >&2
+    echo "  gate 名とコマンドを確認してください（取り違えると無効な marker を作ります）。" >&2
+    exit 65
+fi
+
+MARKER=$(ep_marker_name "$GATE" "$NORM"); rc=$?
+case "$rc" in
+    3) echo "enforce-unlock: SHA を導出できませんでした（gh の認証/ネットワークを確認）。marker は作成しません。" >&2; exit 3 ;;
+    4) echo "enforce-unlock: 操作対象を特定できませんでした（PR番号等を明示してください）。marker は作成しません。" >&2; exit 4 ;;
+esac
+
+mkdir -p "$ENFORCE_MARKER_DIR" && touch "$ENFORCE_MARKER_DIR/$MARKER" \
+    || { echo "enforce-unlock: marker の作成に失敗しました: $ENFORCE_MARKER_DIR/$MARKER" >&2; exit 1; }
+
+echo "認可しました（この操作インスタンスを 1 回許可）:"
+echo "  gate   : $GATE"
+echo "  marker : $MARKER"
+TTL=$(ep_gate_ttl "$GATE")
+[ -n "$TTL" ] && echo "  TTL    : ${TTL}s（経過後は再 gate）"
+echo "  対象が変われば（PR の head SHA 等）marker 名も変わり、再度ブロックされます。"

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "schema": "cc-session/enforce-policy",
+  "enforce": true,
+  "ratified_at": "2026-06-02T00:00:00Z",
+  "ratified_by": "human-shell",
+  "default_marker_ttl_sec": null,
+  "gates": [
+    {
+      "id": "pr-merge",
+      "description": "PR merge は人間レビュー gate 通過後のみ許可する",
+      "match": {
+        "all": ["gh", "pr", "merge"],
+        "any_re": ["(^|[^[:alnum:]_-])gh( +[^ ]+)* +pr +merge([^[:alnum:]_-]|$)"]
+      },
+      "key": {
+        "strategy": "token",
+        "subject_re": ["/pull/([0-9]+)", "merge[^0-9]*#?([0-9]+)"],
+        "subject_fallback": "deny",
+        "subject_prefix": "pr",
+        "sha_keyed": true,
+        "sha_cmd": ["gh", "pr", "view", "{subject}", "--json", "headRefOid", "-q", ".headRefOid"],
+        "sha_validate_re": "^[0-9a-f]{40}$",
+        "sha_len": 8
+      },
+      "marker_ttl_sec": 1800,
+      "unlock_hint": "PR #{subject} のレビュー完了（adversarial review）を確認した上で承認すること"
+    },
+    {
+      "id": "git-push",
+      "description": "push（保護ブランチ / force）は差分確認 gate 通過後のみ許可する",
+      "match": {
+        "all": ["git", "push"],
+        "any_re": ["(^|[^[:alnum:]_-])git( +[^ ]+)* +push([^[:alnum:]_-]|$)"]
+      },
+      "key": {
+        "strategy": "command-hash",
+        "subject_prefix": "cmd",
+        "sha_keyed": false
+      },
+      "marker_ttl_sec": 900,
+      "unlock_hint": "この push（remote・refspec・force 有無を含むコマンド全体）の差分を確認した上で承認すること"
+    },
+    {
+      "id": "deploy",
+      "description": "deploy 系コマンドは対象環境の承認 gate 通過後のみ許可する",
+      "match": {
+        "any_re": ["(^|[^[:alnum:]_-])(terraform( +[^ ]+)* +apply|kubectl( +[^ ]+)* +apply|helm( +[^ ]+)* +(install|upgrade)|serverless( +[^ ]+)* +deploy|npm +run +deploy|make +deploy)([^[:alnum:]_-]|$)"]
+      },
+      "key": {
+        "strategy": "command-hash",
+        "subject_prefix": "cmd",
+        "sha_keyed": false
+      },
+      "marker_ttl_sec": 3600,
+      "unlock_hint": "deploy 対象（環境・リソース）を承認すること"
+    }
+  ]
+}

@@ -1,6 +1,19 @@
 {
   "_comment": "ready-compaction: compaction を生き延びる Working Memory ライフサイクル（2軸 × carrier の effort 一時層）。PreCompact=退避+carry-forward, PostCompact=復元+consumed, SessionStart(compact)=ambient hints。全フックは $WORKING_MEMORY_DIR/.compaction-enabled マーカーがあるプロジェクトでのみ動作する（opt-in）。マーカーは /session:ready-compaction 初回実行時に自動作成される。",
+  "_comment_enforce": "ready-compaction Phase-2: hard 強制層。PreToolUse(Bash)=pretooluse-enforce.sh が、人間レビュー gate 未通過の危険操作（PR merge/push/deploy 等）を deny-block する。$ENFORCE_POLICY_FILE（既定 $PWD/.claude-session/enforce-policy.json）が存在しないプロジェクトでは no-op（policy-presence opt-in / C-5）。グローバル git-destructive-guard.sh と共存（C-8）。認可 marker の作成は人間の生シェルのみ（C-4b）。",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pretooluse-enforce.sh",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [

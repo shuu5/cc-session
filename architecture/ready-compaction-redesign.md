@@ -118,7 +118,7 @@
   - 恒久 standing rule → 「**プロジェクトの** CLAUDE.md(git) へ追記/修正しては？」と**提案**（commit は通常フローへ委譲）。**グローバル CLAUDE.md は対象外**（§0.5-2。横断的なら手動検討を口頭で促すのみ）。
   - 横断/インシデントの事実 → doobidoo（縮小した用途）。
   - effort 命令・状態 → working-file。
-  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `[hard候補]` タグでマーク（実強制は Phase-2 hook）。
+  - **hard 候補**（gate-point を持ち、歪みを許したくない命令）→ working-file に `[hard候補]` タグでマーク（実強制は `pretooluse-enforce.sh`＝§9.6/Phase-2 で実装済み。`/session:enforce` で gate 化）。
 - **Step 2（doobidoo 保存）→ 降格**。「作業状態を全部 doobidoo」をやめ、**横断/インシデントの事実のみ**。プロジェクト固有の恒久知識は「git にコミット」へ誘導。
 - **Step 3（Working Memory 退避）→ スキーマ2分割＋ハイブリッド carry-forward**（§7.4 のスキーマ、§0.5-3）。
   - 退避前に `working-memory.consumed.md` が存在すれば、その「この effort を貫く命令・制約」節を **シェルヘルパーが機械的に抽出して新 working-file へ必ず prepend**（決定論的に「絶対落とさない」）＋ **LLM が現在文脈とマージ・更新**（古い項目の削除・追記）。＝「忘れて続けていった」の治療。
@@ -140,7 +140,7 @@ lifecycle: temporary
 <!-- persistent within effort。consumed から決定論的に carry-forward。
      各項目に強制モードをタグ: [auto] / [confirm] / [hard候補] -->
 - [auto] 例: 軽微でなければ spawn+feature-dev で実装
-- [hard候補] 例: merge 前にユーザー確認（実強制は Phase-2 hook）
+- [hard候補] 例: merge 前にレビュー必須（実強制は `pretooluse-enforce.sh`＝Phase-2 実装済み。`/session:enforce` で gate 化）
 ```
 
 ### T3. フック改訂（最小）
@@ -208,7 +208,14 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 
 > Phase-1 完了（PR #2 merge, main `7ac6915`）後、Phase-2 着手前に anchor セッション（cc-session main）で grill-me し確定。
 > **以下が §9.1〜§9.5 および §6 の関連記述より優先される。** 実装はこの節に従う。
-> ユーザー判断により**今回は doc 化のみ**（実装は後日・別セッション）。`[confirm]` ゲート（Phase-2 着手はユーザー確認必須）は引き続き有効。
+>
+> **実装状況: 2026-06-02 に Phase-2 実装完了**（ブランチ `feat/phase2-hard-enforce`。`[confirm]` ゲート＝ユーザー承認済み）。
+> 下の P2-T1〜T8 はすべて実装済み（各タスクに実ファイル名を併記）。実装時の確定事項:
+> - hook 名は **`pretooluse-enforce.sh`**（§9.6 P2-T2 の SSOT 表記を採用。設計合成内の `enforce-bash.sh` はドリフトのため不採用）。
+> - `subject_re` は **POSIX ERE 安全形**（bash `=~`）に確定。PCRE 非捕捉グループ `(?:...)` は使わず、対象は **capture group 1**。
+> - `{subject}` トークンを `sha_cmd` と `unlock_hint` の両方で統一（合成案の `${subject}` 表記から変更）。
+> - hot path（allow 経路）の jq 呼び出しを **health 1 回 + match 1 回**に最適化。SHA キャッシュは安全性の穴のため**不採用**（block 経路で都度 fresh 取得）。
+> - 例 policy は `architecture/enforce-policy.example.json`（スキーマの正典）。
 
 確定した設計判断（C-1〜C-10）:
 
@@ -216,7 +223,7 @@ marker:      <hard の場合のみ: 解除条件マーカーのパス、例 .cla
 - **C-2 policy の SSOT = 独立永続ファイル** `$PWD/.claude-session/enforce-policy.*`。`[hard候補]` タグは**検出トリガのみ**、`/session:enforce` がそこから policy へ materialize。working-memory 直読みは PostCompact で consumed へ mv され揮発し §9.4「config だから消えない」優位と矛盾するため**不採用**。
 - **C-3 gate 変換 = LLM 提案 → 人間確定**。directive の "gate:" ヒントから LLM が下案、人間が確認/編集して policy ファイルへ確定。**人間 ratified が信頼境界**（取りこぼし＝危険操作を黙って通す最悪 failure を防ぐ）。
 - **C-4a marker scope = 操作インスタンス単位**（例 `pr-<N>-<sha8>-reviewed`、PR番号＋head SHA で keying）。対象/SHA が変われば再 gate ＝「一度で永久解除」を構造的に防止。
-- **C-4b / C-10 marker 作成 = 人間の生シェルのみ**。Claude は marker を書く**コードパスを持たない**。`/session:enforce` は**認可（policy 生成）専用**で unlock は担わない。unlock は hook が stderr で提示する helper を**ユーザーが `!` で実行**。これが hard 性（LLM が自己認可不可）の実体。
+- **C-4b / C-10 marker 作成 = 人間の生シェルのみ（規律ベースの信頼境界）**。`/session:enforce` は**認可（policy 生成）専用**で unlock は担わない。unlock は hook が stderr で提示する helper / `touch` を**ユーザーが `!` で実行**。lib は marker を作るコードパスを持たない（読み取り専用）が、**marker は単なる空ファイルなので Claude も技術的には Bash/Write で作成可能**。したがって本層が保証するのは「沈黙の・偶発的な自己認可の防止」＝Claude は通常 marker を持たず block され、人間に必ず surface する＋認可は可監査な明示操作になる、という**摩擦と可視性**であって、決然と回避する LLM を**暗号学的に**止めるものではない（marker dir の権限分離等は将来の hardening 課題。§9.7 の adversarial レビュー HIGH#5 参照）。
 - **C-5 opt-in = policy ファイルの存在**。不在/空 → hook は **no-op（allow）**。専用 marker も `.compaction-enabled` 流用も不要（流用は compaction 使用済み全プロジェクトで誤ブロック）。
 - **C-6 障害時 = fail-closed (scoped)**。policy 在りで破損/jq 不在/hook 障害時は**内蔵 danger list**（`git push`/`git merge`/`gh pr merge`/deploy 系）のみ block ＋大警告、他 Bash は通す。compaction フック（fail-open）とは**あえて規約を分ける**（性質が違うため）。
 - **C-7 bypass = 人間操作のみの多層**。通常=marker 作成、緊急=policy 削除/空化 or `SESSION_ENFORCE_OFF=1` を**ユーザーが**セット。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
@@ -236,16 +243,41 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 4. gate 一致 ＆ marker 不在 → **block**（exit 2 ＋ stderr: どの gate か・理由・ユーザーが叩く unlock コマンド）
 5. policy 在り＋破損/jq 不在/障害 → **fail-closed (scoped)**: 内蔵 danger list のみ block＋大警告、他は allow
 
-派生実装タスク（Phase-2、着手は別セッション）:
+派生実装タスク（Phase-2・**2026-06-02 実装完了**。✅＝実装済み、実ファイル名を併記）:
 
-- **P2-T1** policy フォーマット確定（`enforce-policy.json` に確定すれば C-5 の opt-in 存在チェック glob が具体化）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチの SSOT）
-- **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（上記判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策・上記補足〕）
-- **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録
-- **P2-T4** `enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用）
-- **P2-T5** `/session:enforce` skill（認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）
-- **P2-T6** ready-compaction router 連携（`[hard候補]` 検出時に `/session:enforce` を提案）
-- **P2-T7** doc 整合（本節・§6 修正済・`compaction-memory-model.md`・`SKILL.md`・README）
-- **P2-T8** bats（policy parse / gate match / marker 有無 / fail-closed scoped / opt-in no-op / unlock helper）
+- ✅ **P2-T1** policy フォーマット確定（`enforce-policy.json`／例は `architecture/enforce-policy.example.json`）＋パーサ lib `scripts/lib/enforce-policy.sh`（フォーマット/マッチ/marker 導出の SSOT。`ep_*` 関数群。marker は読み取りのみ＝作成しない）。`session-env.sh` に `ENFORCE_POLICY_FILE` / `ENFORCE_MARKER_DIR` / `ENFORCE_SHA_TIMEOUT` を追加。tests: `tests/enforce-policy.bats`。
+- ✅ **P2-T2** `scripts/hooks/pretooluse-enforce.sh`（5 ステップ判定フロー・fail-closed scoped・stderr bypass。`git-destructive-guard.sh` 型: `INPUT=$(cat)`＋jq `.tool_input.command`＋exit 2＋空白正規化/コメント除去〔誤爆対策〕。lib 不在時は no-op）。tests: `tests/pretooluse-enforce.bats`。
+- ✅ **P2-T3** `hooks/hooks.json` に PreToolUse:Bash 登録（`${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pretooluse-enforce.sh`、timeout 10000）。
+- ✅ **P2-T4** `scripts/enforce-unlock` 生シェル helper（SHA 導出＋操作インスタンス marker 作成。Claude は呼ばない運用。gate 取り違え防止・fail-closed では作らない）。tests: `tests/enforce-unlock.bats`（hook↔helper の marker 名一致と SHA 前進での自動失効を往復検証）。
+- ✅ **P2-T5** `skills/enforce/SKILL.md`（`/session:enforce` 認可フロー: `[hard候補]` 検出→LLM 提案→人間確定→policy 書き込み。unlock は担わない）。
+- ✅ **P2-T6** ready-compaction router 連携（`skills/ready-compaction/SKILL.md` の carrier/router 行を更新し `[hard候補]` 検出時に `/session:enforce` を提案）。
+- ✅ **P2-T7** doc 整合（本節・§6・`compaction-memory-model.md`・`README.md`・`CLAUDE.md`・両 `SKILL.md`）。
+- ✅ **P2-T8** bats（policy parse / gate match / marker 有無 / TTL / fail-closed scoped / opt-in no-op / unlock helper / hook 統合）。`tests/{enforce-policy,pretooluse-enforce,enforce-unlock}.bats` に分割。
+
+### 9.7 実装後 adversarial レビューの結果（2026-06-02・マージ前ゲート）
+
+[hard候補] 命令「PR merge 前に adversarial レビュー」に従い、実装直後に 6 次元（bypass / fail-closed / 誤爆 / marker 健全性 / shell 安全 / spec 準拠）× 各 finding 懐疑検証のレビューを実施。判定は **CONDITIONAL**（現状マージ不可）で、以下の critical/high を修正してから再 GREEN（255/255）:
+
+- **[CRIT] `#` による 1 文字 bypass**: `ep_normalize` がコメント（`#` 以降）を除去していたため `echo "#" && git push` で gate 語を判定文字列から落とせた。→ **コメント保持マッチへ修正**（git-destructive-guard の NORM 意味論に合わせる）。over-block 側に倒すが安全。
+- **[CRIT] fail-closed 不達 2 系統**: (a) 無効 ERE の gate が `[[ =~ ]]` で常に偽になり黙って無効化（health=active のまま）→ **health で全 ERE を構文検証し corrupt 化**。(b) session-env のみ欠落で空 health が hook の `case` を素通り → **lib に ENFORCE_* 安全デフォルトの再フォールバック＋hook の `case` に `*)` fail-closed**。
+- **[HIGH] gate 語彙の表記揺れ貫通**: 絶対パス `/usr/bin/gh`・`git -C`・フラグ・引用符ラップで gate を外せた（builtin danger も同様）→ **境界を `(^|[^[:alnum:]_-])…([^[:alnum:]_-]|$)` ＋ `( +[^ ]+)*` フラグ吸収へ強化**。
+- **[HIGH] git-push の認可スコープ漏洩**: token subject_re が flag 有無で remote/branch を取り違え、`origin main` の承認が `origin 全 branch` へ漏れた → **git-push を command-hash 戦略へ**（コマンド全体＝remote・refspec・force 有無を keying）。
+- **[HIGH] C-4b 文言の乖離**: marker は空ファイルで Claude も技術的に作成可能 → **doc を正直化**（信頼境界は「人間が生シェルで叩く規律」＋摩擦＋可監査性。沈黙の自己認可は防ぐが暗号学的barrierではない。C-4b 注記参照）。
+
+あわせて MEDIUM/LOW を一部前倒し: pr-merge subject_re の flag-before-number 対応（`merge[^0-9]*#?([0-9]+)`）、裸 `deploy` トークン除去（`git commit -m deploy` 誤爆解消）、subject 検証の先頭ダッシュ禁止、`ep_marker_valid` の stat 失敗時 block（fail-open 是正）。
+
+**残る follow-up（MEDIUM・後追い可）**: settings.json env 経由の恒久 OFF（C-7 の単一 env 依存）、TTL 未指定 gate の無期限化（authoring 落とし穴）、any_re 無し gate の許容、marker dir の権限分離による hard 化（HIGH#5 の技術強制への格上げ）。
+
+健全と再確認された点（誤検出として却下含む）: 決定性・hook↔helper の marker 名一致・SHA/subject の fail-closed 伝播（exit 3/4）・argv injection 防御・`%q`・`_ep_slug` のパストラバーサル無効化・lib が marker を作らない（C-4b は lib レベルで SOLID）・ReDoS なし。
+
+#### 第2ラウンド検証（修正コミット後・実プローブ）
+
+マッチングのコア（境界 ERE・command-hash・ERE 検証・fail-closed 経路）を実質変更したため、修正面に絞った第2ラウンド検証を実施し、さらに以下を発見・対処（260/260 GREEN）:
+
+- **[CRIT] ERE 検証エンジン乖離**: health の ERE 構文検証が `grep -qE` だったため、先頭量化子 `*terraform` 等を grep は valid 扱い（rc=1）する一方 bash `[[ =~ ]]` は rc=2 で扱い、無効 ERE の gate が corrupt 化されず**沈黙失効**（fail-open）。→ **検証を実マッチと同一エンジン（bash `[[ =~ ]]` の rc=2）へ統一**。`broken(re`/`[unclosed` だけでなく先頭量化子も検出。
+- **[CRIT] シェル難読化での gate 貫通**: `g'i't push`・`git p\ush`・`git${IFS}push`・`terra'f'orm apply` 等が正規化後もリテラルのまま残り gate を外せた（builtin danger も同様）。→ **ep_normalize に de-obfuscate を追加**（`"' \` 除去＋`${IFS}`→空白）。これで引用符/エスケープ/`${IFS}` を捕捉。
+- **[残存・脅威モデル外]**: 変数間接（`m=push; git $m`）・コマンド置換 `$(...)` は実行なしに解決できず、本マッチャ（および同型のグローバル `git-destructive-guard.sh`）の原理的限界。**本層の脅威モデルは「沈黙の・偶発的な自己認可の防止＋摩擦＋可監査性」（Position B）**であり、決然と回避する LLM（難読化・変数間接・marker 直接 touch・Write）は対象外と確定（C-4b と整合）。暗号学的barrierが必要なら marker dir の権限分離等の別設計が要る（将来課題）。
+- **[要方針確認・LOW]**: pr-merge marker は同一 PR・同一 head SHA ならマージ方式フラグ（`--squash`/`--admin` 等）を区別しない。`--squash` の unlock が TTL 内に `--admin`（レビュー要件 bypass）も認可しうる。許容可否は運用方針判断（フラグを keying に含めるかはユーザー確定事項）。
 
 ---
 

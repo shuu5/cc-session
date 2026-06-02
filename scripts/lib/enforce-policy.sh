@@ -50,7 +50,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -81,6 +81,18 @@ ep_policy_health() {
             ( [[ "probe" =~ $re ]] ) 2>/dev/null
             [ $? -eq 2 ] && { echo corrupt; return 0; }
         done < <(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null)
+        # TTL 健全性: sha_keyed!=true の gate は有限 TTL が必須。無いと marker が無期限化し恒久 unlock の
+        # fail-open になる（authoring の TTL 書き忘れを黙認せず surface する＝Position B）。sha_keyed=true は
+        # head SHA 変化で marker 名が変わり自動失効するため TTL 必須から除外する。
+        # ★判定はランタイムと同一の ep_gate_ttl で行う（jq 再実装との乖離＝ERE 検証エンジン乖離の教訓を作らない。
+        #   ep_gate_ttl は非整数/負/null/不在をすべて「空＝無期限」に倒すので、その全てを corrupt として検出する）。
+        local gid sk
+        while IFS=$'\t' read -r gid sk; do
+            [ -z "$gid" ] && continue
+            [ "$sk" = "true" ] && continue
+            [ -n "$(ep_gate_ttl "$gid")" ] && continue
+            echo corrupt; return 0
+        done < <(jq -r '.gates[]? | "\(.id)\t\(.key.sha_keyed)"' "$f" 2>/dev/null)
     fi
     echo "$probe"
 }

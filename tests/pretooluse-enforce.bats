@@ -172,6 +172,13 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [[ "$output" == *"fail-closed"* ]]
 }
 
+@test "hook: TTL 未指定 sha_keyed=false gate の policy は corrupt→fail-closed scoped で danger を block（ccs-5p4.1 e2e）" {
+    jq 'del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "printf '%s' '$(_json "git push origin main")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"fail-closed"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

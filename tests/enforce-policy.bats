@@ -448,3 +448,36 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 0 ]
     [[ "$output" == *"/.claude-session/enforce-policy.json|"*"/.claude-session/enforce-markers|5"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# fail-closed 強化（TTL 未指定 gate の無期限 marker＝恒久 unlock を surface・ccs-5p4.1）
+#   sha_keyed=false gate は有限 TTL が無いと marker が無期限化し恒久 unlock の fail-open。
+#   health が ep_gate_ttl と同一基準で TTL 必須を要求し corrupt（→fail-closed scoped）に倒す。
+#   ※判定はランタイムの ep_gate_ttl で行い、jq 再実装との乖離（ERE 検証の教訓）を作らない。
+# ---------------------------------------------------------------------------
+
+@test "health: sha_keyed=false gate に有効 TTL が無い（gate も default も）と corrupt" {
+    # git-push (gates[1]) は sha_keyed=false。marker_ttl_sec を削除し default も null → 無期限化
+    jq 'del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed=false gate も default_marker_ttl_sec で TTL を得れば active" {
+    jq 'del(.gates[1].marker_ttl_sec) | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=900' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}
+
+@test "health: sha_keyed=true gate は TTL 不在でも active（head SHA 変化で自動失効＝TTL 必須から除外）" {
+    # pr-merge (gates[0]) は sha_keyed=true。TTL を消しても git-push/deploy は TTL 在り → active
+    jq 'del(.gates[0].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}
+
+@test "health: sha_keyed=false gate の TTL が非整数（負/小数等）でも corrupt（ep_gate_ttl が空=無期限に倒すため）" {
+    jq '.gates[1].marker_ttl_sec="-5" | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}

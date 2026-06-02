@@ -47,6 +47,13 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 66 ]
 }
 
+@test "unlock: TTL 未指定 sha_keyed=false gate（corrupt）は exit 66 で拒否し marker を作らない（policy 修復を促す・ccs-5p4.1）" {
+    jq 'del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run "$UNLOCK" git-push "git push origin main"
+    [ "$status" -eq 66 ]
+    [ ! -d "$ENFORCE_MARKER_DIR" ] || [ -z "$(ls -A "$ENFORCE_MARKER_DIR")" ]
+}
+
 @test "unlock: git-push（command-hash）は marker を作成し exit 0" {
     local marker
     marker=$(bash -c "source '$LIB' && ep_marker_name git-push 'git push origin main'")

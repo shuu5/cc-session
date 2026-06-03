@@ -70,6 +70,29 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ -e "$ENFORCE_MARKER_DIR/pr-merge-pr-3-sha-a1b2c3d4" ]
 }
 
+@test "unlock: --admin は -flag-admin 込み marker を作成（helper↔hook 名一致・ccs-5p4.7）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --admin"
+    [ "$status" -eq 0 ]
+    [ -e "$ENFORCE_MARKER_DIR/pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]
+}
+
+@test "unlock: --squash は -flag- を付けず admin marker を作らない（認可スコープ分離）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    [ -e "$ENFORCE_MARKER_DIR/pr-merge-pr-3-sha-a1b2c3d4" ]
+    [ ! -e "$ENFORCE_MARKER_DIR/pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]
+}
+
+@test "round-trip: --squash unlock 後も --admin は再 block（フラグ scope 分離往復）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    run bash -c "printf '%s' '$(_json "gh pr merge 3 --admin")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
 @test "unlock: subject 不明（番号省略）は exit 4・marker 作らない" {
     run "$UNLOCK" pr-merge "gh pr merge"
     [ "$status" -eq 4 ]

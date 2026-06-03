@@ -631,3 +631,114 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_marker_valid git-push git-push-test"
     [ "$status" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# 危険フラグ keying（ccs-5p4.7・認可スコープ漏洩を塞ぐ・Position B 内）
+#   pr-merge の marker を --admin 等の危険フラグで区別し、--squash unlock が同 PR・同 head の
+#   --admin（ブランチ保護/必須レビュー bypass）を巻き込み認可するスコープ漏洩を防ぐ。
+#   risk_flags は allowlist（admin のみ keying・マージ方式フラグは過剰 gate 回避で除外）。
+# ---------------------------------------------------------------------------
+
+@test "risk_suffix: ヒット無しは空文字 exit 0（純関数・external 非依存）" {
+    _use_example
+    run bash -c "source '$LIB' && ep_marker_risk_suffix pr-merge 'gh pr merge 3'; echo \"rc=\$?\""
+    [[ "$output" == "rc=0" ]]
+}
+
+@test "risk_suffix: --admin は -flag-admin" {
+    _use_example
+    run bash -c "source '$LIB' && ep_marker_risk_suffix pr-merge 'gh pr merge 3 --admin'"
+    [[ "$output" == "-flag-admin" ]]
+}
+
+@test "risk_flags: --squash と --admin は別 marker（認可スコープ分離・漏洩回帰）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    local sq ad
+    sq=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --squash'")
+    ad=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'")
+    [ "$sq" != "$ad" ]
+    [[ "$ad" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+}
+
+@test "risk_flags: --admin 表記揺れ（--admin / -A / --admin=true）すべて -flag-admin を HIT（検出ゼロ green 防止）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    for c in 'gh pr merge 3 --admin' 'gh pr merge 3 -A' 'gh pr merge 3 --admin=true'; do
+        run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
+        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+    done
+}
+
+@test "risk_flags: マージ方式フラグ（--squash/--merge/--rebase/--delete-branch）は -flag- を付けない（過剰 gate 回避）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    for c in 'gh pr merge 3 --squash' 'gh pr merge 3 --merge' 'gh pr merge 3 --rebase' 'gh pr merge 3 --delete-branch'; do
+        run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
+        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+    done
+}
+
+@test "risk_flags: --author/--admin-foo/--no-admin は -flag-admin に誤爆しない（境界・false-match 防止）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    for c in 'gh pr merge 3 --author bob' 'gh pr merge 3 --admin-foo' 'gh pr merge 3 --no-admin'; do
+        run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
+        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+    done
+}
+
+@test "risk_flags: フラグ順序は marker に影響しない（sort -u で順序非依存）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    local a b
+    a=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin --squash'")
+    b=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge --squash --admin 3'")
+    [ "$a" = "$b" ]
+    [[ "$a" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+}
+
+@test "risk_flags: 不在 policy では --admin でも素の marker（後方互換: 既存 policy 不変）" {
+    jq 'del(.gates[0].key.risk_flags)' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'"
+    [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+}
+
+@test "health: risk_flags の match_re が無効 ERE なら corrupt（危険フラグ検出の silent 失効を防ぐ・ccs-5p4.7）" {
+    # 壊れた ERE は bash [[ =~ ]] で常に偽 → --admin を黙って見逃しスコープ漏洩が復活。ERE 検証ループで surface。
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"*--admin"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: 壊れた risk_flags ERE が前順 gate でも後順 gate を取りこぼさず corrupt（順序非依存）" {
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"(unclosed"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: risk_flags の token に不正文字（大文字）は corrupt（marker 名汚染防止）" {
+    jq '.gates[0].key.risk_flags=[{"token":"Admin","match_re":"(^| )--admin"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: risk_flags の match_re が非文字列は corrupt" {
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":123}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: risk_flags が非配列は corrupt" {
+    jq '.gates[0].key.risk_flags="notarray"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: risk_flags 不在/空配列は active（後方互換・任意フィールド）" {
+    jq 'del(.gates[0].key.risk_flags)' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "active" ]]
+    jq '.gates[0].key.risk_flags=[]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "active" ]]
+}

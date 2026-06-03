@@ -21,7 +21,10 @@
         "sha_keyed": true,
         "sha_cmd": ["gh", "pr", "view", "{subject}", "--json", "headRefOid", "-q", ".headRefOid"],
         "sha_validate_re": "^[0-9a-f]{40}$",
-        "sha_len": 8
+        "sha_len": 8,
+        "risk_flags": [
+          { "token": "admin", "match_re": "(^| )(--admin|-A)([ =]|$)" }
+        ]
       },
       "marker_ttl_sec": 1800,
       "unlock_hint": "PR #{subject} のレビュー完了（adversarial review）を確認した上で承認すること"

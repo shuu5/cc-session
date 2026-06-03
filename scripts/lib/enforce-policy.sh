@@ -53,7 +53,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / 無効 ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -74,21 +74,32 @@ ep_policy_health() {
                 or (.match.any_re | any(type != "string"))
                 or ((.match.all // []) | (type != "array") or any(type != "string"))
               )) then "corrupt"
+        elif ((.gates // []) | any(
+                (.key.risk_flags != null) and (
+                  ((.key.risk_flags | type) != "array")
+                  or (.key.risk_flags | any(
+                       ((.token | type) != "string")
+                       or ((.token | test("^[a-z0-9-]+$")) | not)
+                       or ((.match_re | type) != "string")
+                     ))
+                )
+              )) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"
         else "active" end
     ' "$f" 2>/dev/null) || { echo corrupt; return 0; }
     [ -n "$probe" ] || { echo corrupt; return 0; }
     if [ "$probe" = "active" ]; then
-        # 全 gate の ERE（any_re / subject_re / sha_validate_re）が実際にコンパイルできるか検証する。
-        # 無効 ERE は [[ =~ ]] で決して真にならず gate が「黙って無効化」され危険操作を allow に倒す。
-        # これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ落とす。
+        # 全 gate の ERE（any_re / subject_re / sha_validate_re / risk_flags.match_re）が実際にコンパイル
+        # できるか検証する。無効 ERE は [[ =~ ]] で決して真にならず gate（や危険フラグ検出）が「黙って無効化」
+        # され危険操作を allow に倒す。これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ
+        # 落とす。★risk_flags.match_re の登録漏れ＝認可スコープ漏洩の silent 復活（ccs-5p4.7）なので必須。
         # ★jq 出力は process-subst でなく変数へ捕捉し rc を見る。jq が途中 abort（例 .match や .key が非 object で
         #   index 不能 → rc=5）しても `2>/dev/null` に飲まれて「沈黙の 0 反復」になり ERE 検証が骨抜きになる
         #   （無効 ERE の silent 失効＝fail-open）のを防ぐ。abort は順序に依らず corrupt へ surface する。
         #   probe の .key 型ガードと併せた多層防御。local 宣言と代入は分離（local の rc が代入 rc を隠す罠を回避）。
         local re _eres
-        _eres=$(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null) \
+        _eres=$(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty), .key.risk_flags[]?.match_re)' "$f" 2>/dev/null) \
             || { echo corrupt; return 0; }
         while IFS= read -r re; do
             [ -z "$re" ] && continue
@@ -265,18 +276,51 @@ ep_marker_sha_suffix() {
     printf -- '-sha-%s' "$(printf '%s' "$out" | cut -c1-"$slen")"
 }
 
+# ep_marker_risk_suffix <gate_id> <normalized_command>
+#   key.risk_flags（[{token,match_re}]）を allowlist として評価し、コマンドに含まれる「認可スコープを
+#   広げる危険フラグ」（例 gh pr merge の --admin＝ブランチ保護/必須レビュー bypass）を marker key に折り込む。
+#   各 entry の match_re を **実マッチと同一エンジン（bash [[ =~ ]]）** で評価し、ヒットした token を集めて
+#   "-flag-<t1>-<t2>"（LC_ALL=C sort -u で順序非依存＋重複除去）を stdout。risk_flags 不在/空/全ミス →
+#   空文字 + exit 0（後方互換: 既存 policy の marker 名は不変）。外部コマンドは呼ばない（純経路）。
+#   ★match_re の ERE コンパイル健全性は ep_policy_health の ERE 検証ループが保証する。無効 ERE は
+#     [[ =~ ]] で決して真にならず危険フラグを「黙って」見逃す＝認可スコープ漏洩の silent 復活になるため、
+#     health 側で corrupt に倒して surface する（検証セレクタへの登録漏れが最大の footgun＝ccs-5p4.7）。
+ep_marker_risk_suffix() {
+    local gid="$1" norm="$2" tok re
+    local -a hits=()
+    while IFS=$'\t' read -r tok re; do
+        [ -z "$tok" ] && continue
+        [ -z "$re" ] && continue
+        # health が active 前提で token=^[a-z0-9-]+$・match_re=string・ERE コンパイル可を保証済み。
+        if [[ "$norm" =~ $re ]]; then hits+=("$tok"); fi
+    done < <(jq -r --arg id "$gid" \
+        '.gates[] | select(.id==$id) | .key.risk_flags[]? | "\(.token)\t\(.match_re)"' \
+        "$ENFORCE_POLICY_FILE" 2>/dev/null)
+    [ "${#hits[@]}" -eq 0 ] && { printf ''; return 0; }
+    local out="" sorted
+    sorted=$(printf '%s\n' "${hits[@]}" | LC_ALL=C sort -u)
+    while IFS= read -r tok; do
+        [ -z "$tok" ] && continue
+        out="$out-$(_ep_slug "$tok")"
+    done <<< "$sorted"
+    printf -- '-flag%s' "$out"
+}
+
 # ep_marker_name <gate_id> <normalized_command>
-#   最終 marker 名（base + sha_suffix）を stdout。
+#   最終 marker 名（base + risk_suffix + sha_suffix）を stdout。
 #   exit 0=成功 / 4=subject deny(fail-closed) / 3=SHA 導出不能(fail-closed)。
 #   ★hook（block 判定時）と unlock helper（marker 作成時）が共にこれを呼ぶ＝同名再計算を保証。
 ep_marker_name() {
-    local gid="$1" norm="$2" base subject suffix rc
+    local gid="$1" norm="$2" base risk subject suffix rc
     base=$(ep_marker_base "$gid" "$norm"); rc=$?
     [ "$rc" -ne 0 ] && return "$rc"
+    # 危険フラグ（--admin 等）を base と sha の間に挟む。sha は末尾固定のまま（既存 -sha-<head8> の
+    # 後方互換と suffix-match テストを保つ）。risk は空可・rc は無視（純関数・external 非依存）。
+    risk=$(ep_marker_risk_suffix "$gid" "$norm")
     subject=$(ep_extract_subject "$gid" "$norm" 2>/dev/null) || subject=""
     suffix=$(ep_marker_sha_suffix "$gid" "$subject"); rc=$?
     [ "$rc" -eq 3 ] && return 3
-    printf '%s%s' "$base" "$suffix"
+    printf '%s%s%s' "$base" "$risk" "$suffix"
 }
 
 # ep_marker_path <marker_name>  marker の絶対パスを stdout

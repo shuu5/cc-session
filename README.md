@@ -56,6 +56,7 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 - **marker は操作インスタンス単位**（例 `pr-merge-pr-3-sha-<head8>`）。対象や head SHA が変われば再 gate（「一度で永久解除」を防ぐ）。`marker_ttl_sec` で時間失効も設定可。
 - **fail-closed (scoped)**: policy が壊れている / jq 不在のときは内蔵 danger list（push/merge/deploy 系）のみ block し、他は通す。
 - **緊急 bypass は人間操作のみ**: `SESSION_ENFORCE_OFF=1` を export、または policy を削除/空化。
+- **env 経由の silent disable は Position B 限界**（`ccs-5p4.2` won't-fix）: `SESSION_ENFORCE_OFF` も `ENFORCE_POLICY_FILE` の redirect も settings.json env で設定でき enforce を silent 無効化しうるが、settings.json 編集は deliberate な config 改変＝determined evasion で本層の対象外（防ぐのは沈黙の・偶発的な自己認可）。設計根拠は `architecture/ready-compaction-redesign.md §9.4 C-7`。
 - グローバルの `git-destructive-guard.sh` 等と共存（条件が別の PreToolUse:Bash hook）。
 
 パス（`ENFORCE_POLICY_FILE` / `ENFORCE_MARKER_DIR` / `ENFORCE_SHA_TIMEOUT`）は環境変数で上書き可能。フォーマット/マッチ/marker 導出の SSOT は `scripts/lib/enforce-policy.sh`、設計の SSOT は `architecture/ready-compaction-redesign.md §9.6`。

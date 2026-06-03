@@ -68,6 +68,7 @@
 - **判定フロー**: policy 不在/`enforce:false`→allow ／ gate 不一致→allow ／ 有効 marker 在り→allow ／ marker 不在→block(exit 2)＋unlock 案内 ／ policy 破損・jq 不在→**fail-closed scoped**（内蔵 danger list のみ block）。
 - **marker は操作インスタンス単位**（例 `pr-merge-pr-3-sha-<head8>`）。対象や head SHA が変われば marker 名も変わり自動で再 gate（「一度で永久解除」を防ぐ）。
 - **緊急 bypass は人間操作のみ**: `SESSION_ENFORCE_OFF=1` の export か policy 削除/空化。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
+- **env 経由の silent disable は Position B 限界（`ccs-5p4.2` won't-fix）**: `SESSION_ENFORCE_OFF` も `ENFORCE_POLICY_FILE` の redirect（存在しないパスへ）も settings.json env で設定でき enforce を silent 無効化しうるが、settings.json 編集は deliberate な config 改変＝determined evasion で本層の対象外（沈黙の・偶発的な自己認可を防ぐのが目的）。真に塞ぐには policy path の非 env 固定化等の別設計が要る（設計 SSOT §9.4 C-7）。
 - グローバル `git-destructive-guard.sh` と共存（両者 PreToolUse:Bash、条件が別）。
 
 | 変数 | デフォルト |

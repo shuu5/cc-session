@@ -67,7 +67,48 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     run "$UNLOCK" pr-merge "gh pr merge 3"
     [ "$status" -eq 0 ]
-    [ -e "$ENFORCE_MARKER_DIR/pr-merge-pr-3-sha-a1b2c3d4" ]
+    local marker; marker=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3'")
+    [[ "$marker" == pr-merge-pr-3-sha-a1b2c3d4-* ]]
+    [ -e "$ENFORCE_MARKER_DIR/$marker" ]
+}
+
+@test "unlock: --admin は -flag-admin 込み marker を作成（helper↔hook 名一致・ccs-5p4.7）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --admin"
+    [ "$status" -eq 0 ]
+    local marker; marker=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'")
+    [[ "$marker" == pr-merge-pr-3-flag-admin-sha-a1b2c3d4-* ]]
+    [ -e "$ENFORCE_MARKER_DIR/$marker" ]
+}
+
+@test "unlock: --squash は -flag- を付けず admin marker を作らない（認可スコープ分離）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    local sq adm
+    sq=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --squash'")
+    adm=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'")
+    [[ "$sq" == pr-merge-pr-3-sha-a1b2c3d4-* ]]    # squash は -flag- 無し
+    [ -e "$ENFORCE_MARKER_DIR/$sq" ]               # squash marker は作られた
+    [ ! -e "$ENFORCE_MARKER_DIR/$adm" ]            # admin marker は作られていない（scope 分離）
+}
+
+@test "round-trip: --squash unlock 後も --admin は再 block（フラグ scope 分離往復）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    run bash -c "printf '%s' '$(_json "gh pr merge 3 --admin")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
+@test "round-trip: --squash unlock 後も語末メタ文字終端の --admin は再 block（CRIT-1 e2e・ccs-5p4.7 review）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    for c in 'gh pr merge 3 --admin;' 'gh pr merge 3 --admin|cat' 'gh pr merge 3 --admin)'; do
+        run bash -c "printf '%s' '$(_json "$c")' | '$HOOK'"
+        [ "$status" -eq 2 ]
+    done
 }
 
 @test "unlock: subject 不明（番号省略）は exit 4・marker 作らない" {

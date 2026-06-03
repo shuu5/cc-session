@@ -53,7 +53,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / subject_prefix 形式不正 / 無効 or 空 or 非スペース空白を含む ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -61,7 +61,11 @@ ep_policy_health() {
     local f="$ENFORCE_POLICY_FILE"
     [ -s "$f" ] || { echo absent; return 0; }
     command -v jq >/dev/null 2>&1 || { echo nojq; return 0; }
-    local probe
+    # probe（jq 1 回）で型・schema・ERE 文字列健全性を検証。★ERE 文字列の空/非スペース空白拒否（test("[^\S ]")）:
+    #   空 ERE は runtime が entry を skip し（[ -z "$re" ] && continue）、tab/改行/CR/FF/VT 入りは ep_normalize の
+    #   tr -s '[:space:]' ' ' でコマンド側が空白に潰れ「決して一致しない」＝危険フラグ/gate を黙って失効させる
+    #   silent under-key（health=active のまま漏洩復活）。スペースは正規（(^| ) 等）なので [^\S ]＝空白かつ非スペース
+    #   のみ corrupt 化する。reviewer 提案の [\n\t] では CR/FF/VT を取りこぼすため非スペース空白全種へ拡張（ccs-5p4.7 R2）。
     probe=$(jq -r '
         if (.schema != "cc-session/enforce-policy") then "corrupt"
         elif ((.version // 0) | type) != "number" then "corrupt"
@@ -74,21 +78,42 @@ ep_policy_health() {
                 or (.match.any_re | any(type != "string"))
                 or ((.match.all // []) | (type != "array") or any(type != "string"))
               )) then "corrupt"
+        elif ((.gates // []) | any(
+                (.key.risk_flags != null) and (
+                  ((.key.risk_flags | type) != "array")
+                  or (.key.risk_flags | any(
+                       ((.token | type) != "string")
+                       or ((.token | test("^[a-z0-9-]+$")) | not)
+                       or ((.match_re | type) != "string")
+                     ))
+                )
+              )) then "corrupt"
+        elif ((.gates // []) | any(
+                (.key.subject_prefix != null) and (
+                  ((.key.subject_prefix | type) != "string")
+                  or ((.key.subject_prefix | test("^[a-z0-9._-]+$")) | not)
+                )
+              )) then "corrupt"
+        elif ((.gates // []) | any(
+                ([ .match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty), .key.risk_flags[]?.match_re ]
+                 | any((type == "string") and ((length == 0) or test("[^\\S ]"))))
+              )) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"
         else "active" end
     ' "$f" 2>/dev/null) || { echo corrupt; return 0; }
     [ -n "$probe" ] || { echo corrupt; return 0; }
     if [ "$probe" = "active" ]; then
-        # 全 gate の ERE（any_re / subject_re / sha_validate_re）が実際にコンパイルできるか検証する。
-        # 無効 ERE は [[ =~ ]] で決して真にならず gate が「黙って無効化」され危険操作を allow に倒す。
-        # これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ落とす。
+        # 全 gate の ERE（any_re / subject_re / sha_validate_re / risk_flags.match_re）が実際にコンパイル
+        # できるか検証する。無効 ERE は [[ =~ ]] で決して真にならず gate（や危険フラグ検出）が「黙って無効化」
+        # され危険操作を allow に倒す。これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ
+        # 落とす。★risk_flags.match_re の登録漏れ＝認可スコープ漏洩の silent 復活（ccs-5p4.7）なので必須。
         # ★jq 出力は process-subst でなく変数へ捕捉し rc を見る。jq が途中 abort（例 .match や .key が非 object で
         #   index 不能 → rc=5）しても `2>/dev/null` に飲まれて「沈黙の 0 反復」になり ERE 検証が骨抜きになる
         #   （無効 ERE の silent 失効＝fail-open）のを防ぐ。abort は順序に依らず corrupt へ surface する。
         #   probe の .key 型ガードと併せた多層防御。local 宣言と代入は分離（local の rc が代入 rc を隠す罠を回避）。
         local re _eres
-        _eres=$(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null) \
+        _eres=$(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty), .key.risk_flags[]?.match_re)' "$f" 2>/dev/null) \
             || { echo corrupt; return 0; }
         while IFS= read -r re; do
             [ -z "$re" ] && continue
@@ -214,26 +239,6 @@ ep_extract_subject() {
     esac
 }
 
-# ep_marker_base <gate_id> <normalized_command>
-#   SHA 抜きの決定論部分を stdout。strategy で分岐:
-#     token        → "<gate_id>-<subject_prefix>-<slug(subject)>"
-#     command-hash → "<gate_id>-<subject_prefix>-<sha8(normalized)>"
-#   subject が deny のとき exit 4（fail-closed トリガ）。外部コマンドは呼ばない。
-ep_marker_base() {
-    local gid="$1" norm="$2" strategy prefix subject
-    strategy=$(ep_gate_field "$gid" '.key.strategy')
-    prefix=$(ep_gate_field "$gid" '.key.subject_prefix')
-    case "$strategy" in
-        command-hash)
-            subject=$(_ep_cmd_hash "$norm") ;;
-        token|'')
-            subject=$(ep_extract_subject "$gid" "$norm") || return 4
-            subject=$(_ep_slug "$subject") ;;
-        *) return 4 ;;
-    esac
-    printf '%s-%s-%s' "$gid" "$prefix" "$subject"
-}
-
 # ep_marker_sha_suffix <gate_id> <raw_subject>
 #   key.sha_keyed=false/未設定 → 空文字 + exit 0（外部コマンドを呼ばない＝軽量経路）。
 #   key.sha_keyed=true         → key.sha_cmd の {subject} を検証済み raw_subject で置換し、
@@ -265,18 +270,68 @@ ep_marker_sha_suffix() {
     printf -- '-sha-%s' "$(printf '%s' "$out" | cut -c1-"$slen")"
 }
 
+# ep_marker_risk_suffix <gate_id> <normalized_command>
+#   key.risk_flags（[{token,match_re}]）を allowlist として評価し、コマンドに含まれる「認可スコープを
+#   広げる危険フラグ」（例 gh pr merge の --admin＝ブランチ保護/必須レビュー bypass）を marker key に折り込む。
+#   各 entry の match_re を **実マッチと同一エンジン（bash [[ =~ ]]）** で評価し、ヒットした token を集めて
+#   "-flag-<t1>-<t2>"（LC_ALL=C sort -u で順序非依存＋重複除去）を stdout。risk_flags 不在/空/全ミス →
+#   空文字 + exit 0（後方互換: 既存 policy の marker 名は不変）。外部コマンドは呼ばない（純経路）。
+#   ★match_re の ERE コンパイル健全性は ep_policy_health の ERE 検証ループが保証する。無効 ERE は
+#     [[ =~ ]] で決して真にならず危険フラグを「黙って」見逃す＝認可スコープ漏洩の silent 復活になるため、
+#     health 側で corrupt に倒して surface する（検証セレクタへの登録漏れが最大の footgun＝ccs-5p4.7）。
+ep_marker_risk_suffix() {
+    local gid="$1" norm="$2" tok re
+    local -a hits=()
+    while IFS=$'\t' read -r tok re; do
+        [ -z "$tok" ] && continue
+        [ -z "$re" ] && continue
+        # health が active 前提で token=^[a-z0-9-]+$・match_re=string・ERE コンパイル可を保証済み。
+        if [[ "$norm" =~ $re ]]; then hits+=("$tok"); fi
+    done < <(jq -r --arg id "$gid" \
+        '.gates[] | select(.id==$id) | .key.risk_flags[]? | "\(.token)\t\(.match_re)"' \
+        "$ENFORCE_POLICY_FILE" 2>/dev/null)
+    [ "${#hits[@]}" -eq 0 ] && { printf ''; return 0; }
+    local out="" sorted
+    sorted=$(printf '%s\n' "${hits[@]}" | LC_ALL=C sort -u)
+    while IFS= read -r tok; do
+        [ -z "$tok" ] && continue
+        out="$out-$(_ep_slug "$tok")"
+    done <<< "$sorted"
+    printf -- '-flag%s' "$out"
+}
+
 # ep_marker_name <gate_id> <normalized_command>
-#   最終 marker 名（base + sha_suffix）を stdout。
-#   exit 0=成功 / 4=subject deny(fail-closed) / 3=SHA 導出不能(fail-closed)。
+#   最終 marker 名を stdout。形式: <gid>-<slug(prefix)>-<subject><risk><sha>-<disamb16>
+#   exit 0=成功 / 4=subject deny(fail-closed) / 3=SHA or hash 導出不能(fail-closed)。
 #   ★hook（block 判定時）と unlock helper（marker 作成時）が共にこれを呼ぶ＝同名再計算を保証。
+#   ★disamb16 = 構造化フィールド（gid・strategy・slug(prefix)・subject・risk・sha）を **改行区切り**で
+#     直列化した sha256 の先頭16桁。全フィールドは改行を含まない（gid=^[a-z0-9-]+$ / slug 済 / hex）
+#     ため直列化は単射＝**異なる操作タプルは必ず別 marker**。これにより gid/prefix/subject の平坦 `-`
+#     連結が生む別 gate 間のリテラル衝突（良性 unlock が危険操作を巻き込み認可する fail-open。ccs-5p4.7
+#     第2ラウンド review CRIT・largely pre-existing）を**構造的に**塞ぐ。readable 部は監査用に保持。
+#     ※旧 ep_marker_base はこの単一実装へ統合した（disamb と readable を同一フィールドから導出し drift 排除）。
 ep_marker_name() {
-    local gid="$1" norm="$2" base subject suffix rc
-    base=$(ep_marker_base "$gid" "$norm"); rc=$?
-    [ "$rc" -ne 0 ] && return "$rc"
-    subject=$(ep_extract_subject "$gid" "$norm" 2>/dev/null) || subject=""
-    suffix=$(ep_marker_sha_suffix "$gid" "$subject"); rc=$?
+    local gid="$1" norm="$2" strategy prefix subject risk rawsubj suffix rc
+    strategy=$(ep_gate_field "$gid" '.key.strategy')
+    # prefix は slug 化（path 文字や制御文字の marker 名混入を防ぐ。health でも形式検証する＝多層）。
+    prefix=$(_ep_slug "$(ep_gate_field "$gid" '.key.subject_prefix')")
+    case "$strategy" in
+        command-hash) subject=$(_ep_cmd_hash "$norm") ;;
+        token|'')     subject=$(ep_extract_subject "$gid" "$norm") || return 4
+                      subject=$(_ep_slug "$subject") ;;
+        *) return 4 ;;
+    esac
+    risk=$(ep_marker_risk_suffix "$gid" "$norm")
+    # sha_suffix には **raw subject**（PR番号等・sha_cmd の {subject} 置換用）を渡す。失敗は fail-closed。
+    rawsubj=$(ep_extract_subject "$gid" "$norm" 2>/dev/null) || rawsubj=""
+    suffix=$(ep_marker_sha_suffix "$gid" "$rawsubj"); rc=$?
     [ "$rc" -eq 3 ] && return 3
-    printf '%s%s' "$base" "$suffix"
+    # 衝突不能 disambiguator（改行区切り直列化を sha256 → 先頭16桁）。導出不能は fail-closed(3)。
+    local canon disamb
+    canon=$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$gid" "$strategy" "$prefix" "$subject" "$risk" "$suffix")
+    disamb=$(printf '%s' "$canon" | sha256sum 2>/dev/null | cut -c1-16)
+    [ "${#disamb}" -eq 16 ] || return 3
+    printf '%s-%s-%s%s%s-%s' "$gid" "$prefix" "$subject" "$risk" "$suffix" "$disamb"
 }
 
 # ep_marker_path <marker_name>  marker の絶対パスを stdout

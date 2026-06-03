@@ -34,12 +34,15 @@ export WORKING_MEMORY_DIR ENFORCE_POLICY_FILE ENFORCE_MARKER_DIR ENFORCE_SHA_TIM
 # --- SSOT 定数（export） ---
 # lib が解釈できる最大 policy version。これを超える version は badversion → fail-closed。
 ENFORCE_POLICY_VERSION_MAX=1
+# marker TTL の現実的上限（秒・既定 30 日）。これを超える TTL は事実上の恒久 unlock（fail-open 等価）なので
+# ep_gate_ttl が空に倒し、health 側（sha_keyed!=true gate の TTL 必須）で corrupt 化＝surface する（Position B）。env で上書き可。
+: "${ENFORCE_TTL_MAX_SEC:=2592000}"
 # C-6 内蔵 danger list（policy 非依存・純 ERE）。policy 読込不能時の scoped fail-closed で使う。
 # policy 例の gate 語彙（pr-merge / git-push / deploy）と同期させること（tests で回帰検出）。
 # 境界は (^|[^[:alnum:]_-]) … ([^[:alnum:]_-]|$) ＝ 絶対パス(/usr/bin/gh)・引用符ラップ('terraform apply')・
 # 区切り(;・&&)前置でも捕捉。( +[^ ]+)* で間のフラグ/サブコマンド(git -C / kubectl --context)を吸収する。
 ENFORCE_BUILTIN_DANGER_REGEX='(^|[^[:alnum:]_-])gh( +[^ ]+)* +pr +merge([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])git( +[^ ]+)* +push([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])git( +[^ ]+)* +merge([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])(kubectl|helm)( +[^ ]+)* +(apply|install|upgrade)([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])terraform( +[^ ]+)* +apply([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])serverless( +[^ ]+)* +deploy([^[:alnum:]_-]|$)'
-export ENFORCE_POLICY_VERSION_MAX ENFORCE_BUILTIN_DANGER_REGEX
+export ENFORCE_POLICY_VERSION_MAX ENFORCE_TTL_MAX_SEC ENFORCE_BUILTIN_DANGER_REGEX
 
 # ep_policy_file
 #   stdout: policy ファイルの解決パス。exit 0。パス参照の唯一の入口。
@@ -288,6 +291,12 @@ ep_gate_ttl() {
         ttl=$(jq -r '.default_marker_ttl_sec // empty' "$ENFORCE_POLICY_FILE" 2>/dev/null)
     fi
     case "$ttl" in ''|null|*[!0-9]*) printf ''; return 0 ;; esac
+    # 18 桁超は確実に上限超過、かつ 64bit 算術の overflow も招くので空（無効）に倒す（health で corrupt 化）。
+    [ "${#ttl}" -gt 18 ] && { printf ''; return 0; }
+    # 先頭ゼロの 8 進誤解釈（"0900"→算術エラー＋監査ログ汚染、"0100"→64 の silent 縮小）を防ぐ 10 進正規化。
+    ttl=$((10#$ttl))
+    # 現実的上限を超える TTL は事実上の恒久 unlock（fail-open 等価）。空に倒して health 側で corrupt 化＝surface（Position B）。
+    [ "$ttl" -le "$ENFORCE_TTL_MAX_SEC" ] || { printf ''; return 0; }
     printf '%s' "$ttl"
 }
 

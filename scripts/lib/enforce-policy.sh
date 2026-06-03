@@ -53,7 +53,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / 無効 ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / subject_prefix 形式不正 / 無効 or 空 or 非スペース空白を含む ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -86,6 +86,12 @@ ep_policy_health() {
                        or ((.token | test("^[a-z0-9-]+$")) | not)
                        or ((.match_re | type) != "string")
                      ))
+                )
+              )) then "corrupt"
+        elif ((.gates // []) | any(
+                (.key.subject_prefix != null) and (
+                  ((.key.subject_prefix | type) != "string")
+                  or ((.key.subject_prefix | test("^[a-z0-9._-]+$")) | not)
                 )
               )) then "corrupt"
         elif ((.gates // []) | any(
@@ -233,33 +239,6 @@ ep_extract_subject() {
     esac
 }
 
-# ep_marker_base <gate_id> <normalized_command>
-#   SHA 抜きの決定論部分を stdout。strategy で分岐:
-#     token        → "<gate_id>-<subject_prefix>-<slug(subject)>"
-#     command-hash → "<gate_id>-<subject_prefix>-<sha8(normalized)>"
-#   subject が deny のとき exit 4（fail-closed トリガ）。外部コマンドは呼ばない。
-ep_marker_base() {
-    local gid="$1" norm="$2" strategy prefix subject
-    strategy=$(ep_gate_field "$gid" '.key.strategy')
-    prefix=$(ep_gate_field "$gid" '.key.subject_prefix')
-    case "$strategy" in
-        command-hash)
-            subject=$(_ep_cmd_hash "$norm") ;;
-        token|'')
-            subject=$(ep_extract_subject "$gid" "$norm") || return 4
-            subject=$(_ep_slug "$subject")
-            # HIGH-3（ccs-5p4.7 review）: subject slug が marker の予約区切り（-flag- / -sha-）を含むと、
-            #   危険操作の risk/SHA 付き marker（base + -flag-<t> + -sha-<h>）と良性操作の subject 由来 marker
-            #   がリテラル衝突し、良性の unlock が危険操作を巻き込み認可しうる（free-form subject token gate ＋
-            #   risk_flags/sha_keyed の組合せ）。平坦連結では区切りを非曖昧にできないため fail-closed deny。
-            #   出荷 example の数字/hex subject はこの substring を持てず非該当（過剰 block ゼロ）。pre-existing な
-            #   -sha- 衝突もここで一掃する。subject はコマンド由来＝health で静的検出不可ゆえ runtime で塞ぐ。
-            case "$subject" in *-flag-*|*-sha-*) return 4 ;; esac ;;
-        *) return 4 ;;
-    esac
-    printf '%s-%s-%s' "$gid" "$prefix" "$subject"
-}
-
 # ep_marker_sha_suffix <gate_id> <raw_subject>
 #   key.sha_keyed=false/未設定 → 空文字 + exit 0（外部コマンドを呼ばない＝軽量経路）。
 #   key.sha_keyed=true         → key.sha_cmd の {subject} を検証済み raw_subject で置換し、
@@ -322,20 +301,37 @@ ep_marker_risk_suffix() {
 }
 
 # ep_marker_name <gate_id> <normalized_command>
-#   最終 marker 名（base + risk_suffix + sha_suffix）を stdout。
-#   exit 0=成功 / 4=subject deny(fail-closed) / 3=SHA 導出不能(fail-closed)。
+#   最終 marker 名を stdout。形式: <gid>-<slug(prefix)>-<subject><risk><sha>-<disamb16>
+#   exit 0=成功 / 4=subject deny(fail-closed) / 3=SHA or hash 導出不能(fail-closed)。
 #   ★hook（block 判定時）と unlock helper（marker 作成時）が共にこれを呼ぶ＝同名再計算を保証。
+#   ★disamb16 = 構造化フィールド（gid・strategy・slug(prefix)・subject・risk・sha）を **改行区切り**で
+#     直列化した sha256 の先頭16桁。全フィールドは改行を含まない（gid=^[a-z0-9-]+$ / slug 済 / hex）
+#     ため直列化は単射＝**異なる操作タプルは必ず別 marker**。これにより gid/prefix/subject の平坦 `-`
+#     連結が生む別 gate 間のリテラル衝突（良性 unlock が危険操作を巻き込み認可する fail-open。ccs-5p4.7
+#     第2ラウンド review CRIT・largely pre-existing）を**構造的に**塞ぐ。readable 部は監査用に保持。
+#     ※旧 ep_marker_base はこの単一実装へ統合した（disamb と readable を同一フィールドから導出し drift 排除）。
 ep_marker_name() {
-    local gid="$1" norm="$2" base risk subject suffix rc
-    base=$(ep_marker_base "$gid" "$norm"); rc=$?
-    [ "$rc" -ne 0 ] && return "$rc"
-    # 危険フラグ（--admin 等）を base と sha の間に挟む。sha は末尾固定のまま（既存 -sha-<head8> の
-    # 後方互換と suffix-match テストを保つ）。risk は空可・rc は無視（純関数・external 非依存）。
+    local gid="$1" norm="$2" strategy prefix subject risk rawsubj suffix rc
+    strategy=$(ep_gate_field "$gid" '.key.strategy')
+    # prefix は slug 化（path 文字や制御文字の marker 名混入を防ぐ。health でも形式検証する＝多層）。
+    prefix=$(_ep_slug "$(ep_gate_field "$gid" '.key.subject_prefix')")
+    case "$strategy" in
+        command-hash) subject=$(_ep_cmd_hash "$norm") ;;
+        token|'')     subject=$(ep_extract_subject "$gid" "$norm") || return 4
+                      subject=$(_ep_slug "$subject") ;;
+        *) return 4 ;;
+    esac
     risk=$(ep_marker_risk_suffix "$gid" "$norm")
-    subject=$(ep_extract_subject "$gid" "$norm" 2>/dev/null) || subject=""
-    suffix=$(ep_marker_sha_suffix "$gid" "$subject"); rc=$?
+    # sha_suffix には **raw subject**（PR番号等・sha_cmd の {subject} 置換用）を渡す。失敗は fail-closed。
+    rawsubj=$(ep_extract_subject "$gid" "$norm" 2>/dev/null) || rawsubj=""
+    suffix=$(ep_marker_sha_suffix "$gid" "$rawsubj"); rc=$?
     [ "$rc" -eq 3 ] && return 3
-    printf '%s%s%s' "$base" "$risk" "$suffix"
+    # 衝突不能 disambiguator（改行区切り直列化を sha256 → 先頭16桁）。導出不能は fail-closed(3)。
+    local canon disamb
+    canon=$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$gid" "$strategy" "$prefix" "$subject" "$risk" "$suffix")
+    disamb=$(printf '%s' "$canon" | sha256sum 2>/dev/null | cut -c1-16)
+    [ "${#disamb}" -eq 16 ] || return 3
+    printf '%s-%s-%s%s%s-%s' "$gid" "$prefix" "$subject" "$risk" "$suffix" "$disamb"
 }
 
 # ep_marker_path <marker_name>  marker の絶対パスを stdout

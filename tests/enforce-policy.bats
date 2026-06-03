@@ -210,22 +210,22 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 4 ]
 }
 
-@test "marker_base: git-push は command-hash 戦略（コマンド全体で keying＝認可スコープ漏洩を防ぐ）" {
+@test "marker_name: git-push は command-hash 戦略（コマンド全体で keying＝認可スコープ漏洩を防ぐ）" {
     _use_example
     # prefix は git-push-cmd-、かつ別 refspec は別 marker（main 承認が develop を認可しない＝C-4a）
-    run bash -c "source '$LIB' && ep_marker_base git-push 'git push origin main'"
+    run bash -c "source '$LIB' && ep_marker_name git-push 'git push origin main'"
     [[ "$output" == git-push-cmd-* ]]
     local m_main="$output"
-    run bash -c "source '$LIB' && ep_marker_base git-push 'git push origin develop'"
+    run bash -c "source '$LIB' && ep_marker_name git-push 'git push origin develop'"
     [ "$m_main" != "$output" ]
     # 同一コマンドは同一 marker（決定論＝unlock 後に同 push が通る）
-    run bash -c "source '$LIB' && a=\$(ep_marker_base git-push 'git push origin main'); b=\$(ep_marker_base git-push 'git push origin main'); [ \"\$a\" = \"\$b\" ] && echo same"
+    run bash -c "source '$LIB' && a=\$(ep_marker_name git-push 'git push origin main'); b=\$(ep_marker_name git-push 'git push origin main'); [ \"\$a\" = \"\$b\" ] && echo same"
     [[ "$output" == "same" ]]
 }
 
-@test "marker_base: command-hash 戦略はコマンド差で異なる（再 gate）" {
+@test "marker_name: command-hash 戦略はコマンド差で異なる（再 gate）" {
     _use_example
-    run bash -c "source '$LIB' && a=\$(ep_marker_base deploy 'deploy alpha'); b=\$(ep_marker_base deploy 'deploy beta'); [ \"\$a\" != \"\$b\" ] && echo differ"
+    run bash -c "source '$LIB' && a=\$(ep_marker_name deploy 'deploy alpha'); b=\$(ep_marker_name deploy 'deploy beta'); [ \"\$a\" != \"\$b\" ] && echo differ"
     [[ "$output" == "differ" ]]
 }
 
@@ -297,7 +297,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     run bash -c "source '$LIB' && a=\$(ep_marker_name pr-merge 'gh pr merge 3'); b=\$(ep_marker_name pr-merge 'gh pr merge 3'); [ \"\$a\" = \"\$b\" ] && echo \"\$a\""
     [ "$status" -eq 0 ]
-    [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+    [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4-"* ]]
 }
 
 @test "marker_name: head SHA が変われば marker 名が変わる（C-4a 自動再 gate）" {
@@ -308,8 +308,8 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3'"
     [ "$n1" != "$output" ]
-    [[ "$n1" == *"-sha-aaaaaaaa" ]]
-    [[ "$output" == *"-sha-bbbbbbbb" ]]
+    [[ "$n1" == *"-sha-aaaaaaaa-"* ]]
+    [[ "$output" == *"-sha-bbbbbbbb-"* ]]
 }
 
 @test "marker_name: subject deny は exit 4 を伝播（fail-closed）" {
@@ -658,7 +658,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     sq=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --squash'")
     ad=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'")
     [ "$sq" != "$ad" ]
-    [[ "$ad" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+    [[ "$ad" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4-"* ]]
 }
 
 @test "risk_flags: --admin 表記揺れ（--admin / -A / --admin=true）すべて -flag-admin を HIT（検出ゼロ green 防止）" {
@@ -666,7 +666,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     for c in 'gh pr merge 3 --admin' 'gh pr merge 3 -A' 'gh pr merge 3 --admin=true'; do
         run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
-        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4-"* ]]
     done
 }
 
@@ -675,7 +675,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     for c in 'gh pr merge 3 --squash' 'gh pr merge 3 --merge' 'gh pr merge 3 --rebase' 'gh pr merge 3 --delete-branch'; do
         run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
-        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4-"* ]]
     done
 }
 
@@ -684,7 +684,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     for c in 'gh pr merge 3 --author bob' 'gh pr merge 3 --admin-foo' 'gh pr merge 3 --no-admin'; do
         run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
-        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+        [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4-"* ]]
     done
 }
 
@@ -695,14 +695,14 @@ _stub_gh() {  # $1 = stdout として返す文字列
     a=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin --squash'")
     b=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge --squash --admin 3'")
     [ "$a" = "$b" ]
-    [[ "$a" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+    [[ "$a" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4-"* ]]
 }
 
 @test "risk_flags: 不在 policy では --admin でも素の marker（後方互換: 既存 policy 不変）" {
     jq 'del(.gates[0].key.risk_flags)' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin'"
-    [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4" ]]
+    [[ "$output" == "pr-merge-pr-3-sha-a1b2c3d4-"* ]]
 }
 
 @test "health: risk_flags の match_re が無効 ERE なら corrupt（危険フラグ検出の silent 失効を防ぐ・ccs-5p4.7）" {
@@ -751,7 +751,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     for c in 'gh pr merge 3 --admin;' 'gh pr merge 3 --admin|cat' 'gh pr merge 3 --admin&' 'gh pr merge 3 --admin>/dev/null' 'gh pr merge 3 --admin)'; do
         run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
-        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4-"* ]]
     done
 }
 
@@ -759,7 +759,7 @@ _stub_gh() {  # $1 = stdout として返す文字列
     _use_example
     _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
     run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin=true'"
-    [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+    [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4-"* ]]
 }
 
 @test "health: risk_flags の match_re が空文字列は corrupt（silent under-key 防止・HIGH-2・review 回帰）" {
@@ -797,16 +797,55 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
 }
 
-@test "marker_base: subject slug が予約区切り(-flag-/-sha-)を含むと fail-closed deny（HIGH-3 リテラル衝突防止・review 回帰）" {
-    # free-form subject token gate を作り、subject に -flag-/-sha- を含ませる。危険操作の risk/SHA 付き
-    # marker と良性 subject 由来 marker のリテラル衝突を runtime deny で塞ぐ（出荷 example は数字 subject で非該当）。
-    jq '.gates[0].key.subject_re=["merge +([a-z0-9-]+)"] | .gates[0].key.sha_keyed=false | del(.gates[0].key.sha_cmd) | del(.gates[0].key.sha_validate_re) | .gates[0].marker_ttl_sec=1800' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
-    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge staging-flag-prune'"
-    [ "$status" -eq 4 ]
-    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge main-sha-deadbeef'"
-    [ "$status" -eq 4 ]
-    # 予約区切りを含まない subject は通常どおり成功（過剰 block ゼロ）
-    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge staging'"
-    [ "$status" -eq 0 ]
-    [[ "$output" == "pr-merge-pr-staging" ]]
+@test "marker_name: 別 gate 間の readable 衝突でも disamb で別 marker（round-2 CRIT 回帰・認可スコープ漏洩防止）" {
+    # reviewer PoC: gid/prefix/subject のフラット連結が別 gate で同一 readable（pr-ref-feat-flag-admin）を
+    # 生むが、disamb hash が構造化フィールドを区別し別 marker にする＝良性 unlock が危険操作（--admin）を
+    # 巻き込み認可する fail-open（実 hook で exit 0 だった）を構造的に塞ぐ。
+    jq '.gates = [
+      {"id":"pr","description":"d","match":{"all":["gh","pr","merge"],"any_re":["(^|[^[:alnum:]_-])gh( +[^ ]+)* +pr +merge([^[:alnum:]_-]|$)"]},
+       "key":{"strategy":"token","subject_re":["merge +([a-z0-9-]+)"],"subject_prefix":"ref","subject_fallback":"deny","sha_keyed":false,
+              "risk_flags":[{"token":"admin","match_re":"(^|[^[:alnum:]_-])(--admin|-A)([^[:alnum:]_-]|$)"}]},"marker_ttl_sec":1800},
+      {"id":"pr-ref-feat","description":"d","match":{"all":["tag"],"any_re":["(^|[^[:alnum:]_-])tag([^[:alnum:]_-]|$)"]},
+       "key":{"strategy":"token","subject_re":["tag +([a-z0-9-]+)"],"subject_prefix":"flag","subject_fallback":"deny","sha_keyed":false},"marker_ttl_sec":1800}
+    ]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+    local danger benign
+    danger=$(bash -c "source '$LIB' && ep_marker_name pr 'gh pr merge feat --admin'")
+    benign=$(bash -c "source '$LIB' && ep_marker_name pr-ref-feat 'tag admin'")
+    [[ "$danger" == "pr-ref-feat-flag-admin-"* ]]   # readable 部は一致（旧実装の衝突点）
+    [[ "$benign" == "pr-ref-feat-flag-admin-"* ]]
+    [ "$danger" != "$benign" ]                      # だが disamb で別 marker＝衝突閉鎖
+}
+
+@test "marker_name: subject に -flag-/-sha- を含んでも deny しない（HIGH over-block 解消・round-2 review）" {
+    # 旧 HIGH-3 修正は feature-flag-x / fix-sha-mismatch 等の正規ブランチ名を恒久 deny する over-block
+    # 副作用があった。disamb hash で衝突を構造的に塞いだため runtime deny は撤去＝正規操作を壊さない。
+    jq '.gates = [
+      {"id":"pushtok","description":"d","match":{"all":["git","push"],"any_re":["(^|[^[:alnum:]_-])git( +[^ ]+)* +push([^[:alnum:]_-]|$)"]},
+       "key":{"strategy":"token","subject_re":["push +([a-z0-9/-]+)"],"subject_prefix":"ref","subject_fallback":"deny","sha_keyed":false},"marker_ttl_sec":900}
+    ]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    for s in feature-flag-x fix-sha-mismatch no-flag-here; do
+        run bash -c "source '$LIB' && ep_marker_name pushtok 'git push $s'"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "marker_name: disamb16 は決定論的な 16hex 接尾辞（衝突不能性の土台）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    local m disamb
+    m=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3'")
+    disamb="${m##*-}"
+    [[ "$disamb" =~ ^[0-9a-f]{16}$ ]]
+    [ "$m" = "$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3'")" ]
+}
+
+@test "health: subject_prefix が不正形式（path 文字/非文字列）は corrupt（review 回帰）" {
+    jq '.gates[0].key.subject_prefix="a/b"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[0].key.subject_prefix=123' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[0].key.subject_prefix="pr"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "active" ]]
 }

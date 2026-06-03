@@ -769,12 +769,25 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [[ "$output" == "corrupt" ]]
 }
 
-@test "health: ERE 文字列に改行/タブを含むと corrupt（health↔runtime 分割乖離防止・MED-4・review 回帰）" {
-    # 改行入り match_re は health が分割後の各片を valid 検証し active、runtime は別 regex を評価する乖離。
-    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"zzz\n(^| )(--admin)([ =]|$)"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+@test "health: ERE 文字列に非スペース空白（改行/タブ/CR/VT/FF）を含むと corrupt（silent under-key 防止・MED-4＋R2・review 回帰）" {
+    # ep_normalize の tr -s '[:space:]' ' ' でコマンド側が空白に潰れ「決して一致しない」＝危険フラグ/gate の
+    # 黙った失効（health=active のまま runtime under-key で漏洩復活）。スペースは正規ゆえ [^\S ] のみ corrupt 化。
+    # reviewer 提案の [\n\t] では CR/VT/FF を取りこぼす（実機で CR が under-key）ため非スペース空白全種を網羅。
+    for ws in '\n' '\t' '\r' '\u000b' '\f'; do
+        jq ".gates[0].key.risk_flags=[{\"token\":\"admin\",\"match_re\":\"(^| )(--admin)${ws}([ =]|\$)\"}]" "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+        run bash -c "source '$LIB' && ep_policy_health"
+        [[ "$output" == "corrupt" ]]
+    done
+    # any_re セレクタでも同様（全 ERE セレクタへ一貫適用）
+    jq '.gates[0].match.any_re=["foo\rbar"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
     run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
-    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"a\tb"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
-    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: スペースを含む正規 ERE は active を維持（[^\\S ] が過剰 corrupt しない）" {
+    # 出荷 example の any_re/subject_re/sha_validate_re/risk_flags.match_re はスペースを含むが非スペース空白は無い。
+    _use_example
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
 }
 
 @test "health: any_re の空文字列/改行も corrupt（全 ERE セレクタへ一貫適用・review 回帰）" {

@@ -61,7 +61,11 @@ ep_policy_health() {
     local f="$ENFORCE_POLICY_FILE"
     [ -s "$f" ] || { echo absent; return 0; }
     command -v jq >/dev/null 2>&1 || { echo nojq; return 0; }
-    local probe
+    # probe（jq 1 回）で型・schema・ERE 文字列健全性を検証。★ERE 文字列の空/非スペース空白拒否（test("[^\S ]")）:
+    #   空 ERE は runtime が entry を skip し（[ -z "$re" ] && continue）、tab/改行/CR/FF/VT 入りは ep_normalize の
+    #   tr -s '[:space:]' ' ' でコマンド側が空白に潰れ「決して一致しない」＝危険フラグ/gate を黙って失効させる
+    #   silent under-key（health=active のまま漏洩復活）。スペースは正規（(^| ) 等）なので [^\S ]＝空白かつ非スペース
+    #   のみ corrupt 化する。reviewer 提案の [\n\t] では CR/FF/VT を取りこぼすため非スペース空白全種へ拡張（ccs-5p4.7 R2）。
     probe=$(jq -r '
         if (.schema != "cc-session/enforce-policy") then "corrupt"
         elif ((.version // 0) | type) != "number" then "corrupt"
@@ -86,7 +90,7 @@ ep_policy_health() {
               )) then "corrupt"
         elif ((.gates // []) | any(
                 ([ .match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty), .key.risk_flags[]?.match_re ]
-                 | any((type == "string") and ((length == 0) or contains("\n") or contains("\t"))))
+                 | any((type == "string") and ((length == 0) or test("[^\\S ]"))))
               )) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"

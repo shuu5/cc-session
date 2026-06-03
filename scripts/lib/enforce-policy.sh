@@ -84,6 +84,10 @@ ep_policy_health() {
                      ))
                 )
               )) then "corrupt"
+        elif ((.gates // []) | any(
+                ([ .match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty), .key.risk_flags[]?.match_re ]
+                 | any((type == "string") and ((length == 0) or contains("\n") or contains("\t"))))
+              )) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"
         else "active" end
@@ -239,7 +243,14 @@ ep_marker_base() {
             subject=$(_ep_cmd_hash "$norm") ;;
         token|'')
             subject=$(ep_extract_subject "$gid" "$norm") || return 4
-            subject=$(_ep_slug "$subject") ;;
+            subject=$(_ep_slug "$subject")
+            # HIGH-3（ccs-5p4.7 review）: subject slug が marker の予約区切り（-flag- / -sha-）を含むと、
+            #   危険操作の risk/SHA 付き marker（base + -flag-<t> + -sha-<h>）と良性操作の subject 由来 marker
+            #   がリテラル衝突し、良性の unlock が危険操作を巻き込み認可しうる（free-form subject token gate ＋
+            #   risk_flags/sha_keyed の組合せ）。平坦連結では区切りを非曖昧にできないため fail-closed deny。
+            #   出荷 example の数字/hex subject はこの substring を持てず非該当（過剰 block ゼロ）。pre-existing な
+            #   -sha- 衝突もここで一掃する。subject はコマンド由来＝health で静的検出不可ゆえ runtime で塞ぐ。
+            case "$subject" in *-flag-*|*-sha-*) return 4 ;; esac ;;
         *) return 4 ;;
     esac
     printf '%s-%s-%s' "$gid" "$prefix" "$subject"

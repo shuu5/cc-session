@@ -742,3 +742,58 @@ _stub_gh() {  # $1 = stdout として返す文字列
     jq '.gates[0].key.risk_flags=[]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
     run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "active" ]]
 }
+
+# ---- ccs-5p4.7 merge 前 adversarial review の修正（CRIT-1 / HIGH-2 / MED-4 / HIGH-3）----
+
+@test "risk_flags: 語末シェルメタ文字終端の --admin（;|&>)）も -flag-admin を HIT（CRIT-1 両側境界・review 回帰）" {
+    # 旧 match_re ([ =]|$) では --admin; 等が素 marker に化け hook を rc=0 突破した（実機 CONFIRM）。
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    for c in 'gh pr merge 3 --admin;' 'gh pr merge 3 --admin|cat' 'gh pr merge 3 --admin&' 'gh pr merge 3 --admin>/dev/null' 'gh pr merge 3 --admin)'; do
+        run bash -c "source '$LIB' && ep_marker_name pr-merge '$c'"
+        [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+    done
+}
+
+@test "risk_flags: --admin=true は両側境界でも HIT を維持（= を terminator から除外しない後退防止）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 3 --admin=true'"
+    [[ "$output" == "pr-merge-pr-3-flag-admin-sha-a1b2c3d4" ]]
+}
+
+@test "health: risk_flags の match_re が空文字列は corrupt（silent under-key 防止・HIGH-2・review 回帰）" {
+    # 空 ERE は health=active のまま runtime が entry を skip し admin keying を黙って失効＝漏洩復活。
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":""}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: ERE 文字列に改行/タブを含むと corrupt（health↔runtime 分割乖離防止・MED-4・review 回帰）" {
+    # 改行入り match_re は health が分割後の各片を valid 検証し active、runtime は別 regex を評価する乖離。
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"zzz\n(^| )(--admin)([ =]|$)"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[0].key.risk_flags=[{"token":"admin","match_re":"a\tb"}]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: any_re の空文字列/改行も corrupt（全 ERE セレクタへ一貫適用・review 回帰）" {
+    jq '.gates[0].match.any_re=[""]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[0].match.any_re=["foo\nbar"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "marker_base: subject slug が予約区切り(-flag-/-sha-)を含むと fail-closed deny（HIGH-3 リテラル衝突防止・review 回帰）" {
+    # free-form subject token gate を作り、subject に -flag-/-sha- を含ませる。危険操作の risk/SHA 付き
+    # marker と良性 subject 由来 marker のリテラル衝突を runtime deny で塞ぐ（出荷 example は数字 subject で非該当）。
+    jq '.gates[0].key.subject_re=["merge +([a-z0-9-]+)"] | .gates[0].key.sha_keyed=false | del(.gates[0].key.sha_cmd) | del(.gates[0].key.sha_validate_re) | .gates[0].marker_ttl_sec=1800' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge staging-flag-prune'"
+    [ "$status" -eq 4 ]
+    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge main-sha-deadbeef'"
+    [ "$status" -eq 4 ]
+    # 予約区切りを含まない subject は通常どおり成功（過剰 block ゼロ）
+    run bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge staging'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "pr-merge-pr-staging" ]]
+}

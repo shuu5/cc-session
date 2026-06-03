@@ -93,6 +93,16 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 2 ]
 }
 
+@test "round-trip: --squash unlock 後も語末メタ文字終端の --admin は再 block（CRIT-1 e2e・ccs-5p4.7 review）" {
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run "$UNLOCK" pr-merge "gh pr merge 3 --squash"
+    [ "$status" -eq 0 ]
+    for c in 'gh pr merge 3 --admin;' 'gh pr merge 3 --admin|cat' 'gh pr merge 3 --admin)'; do
+        run bash -c "printf '%s' '$(_json "$c")' | '$HOOK'"
+        [ "$status" -eq 2 ]
+    done
+}
+
 @test "unlock: subject 不明（番号省略）は exit 4・marker 作らない" {
     run "$UNLOCK" pr-merge "gh pr merge"
     [ "$status" -eq 4 ]

@@ -23,7 +23,7 @@
         "sha_validate_re": "^[0-9a-f]{40}$",
         "sha_len": 8,
         "risk_flags": [
-          { "token": "admin", "match_re": "(^| )(--admin|-A)([ =]|$)" }
+          { "token": "admin", "match_re": "(^|[^[:alnum:]_-])(--admin|-A)([^[:alnum:]_-]|$)" }
         ]
       },
       "marker_ttl_sec": 1800,

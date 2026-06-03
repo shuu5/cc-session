@@ -191,6 +191,18 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 2 ]
 }
 
+@test "hook: 壊れた .key gate が前順でも後順 no-TTL gate を corrupt→block（第2ラウンド fail-open の E2E 回帰・ccs-5p4.1）" {
+    # gates[0] 壊れ .key（前順）+ gates[1] git-push no-TTL + 26年前の固定 marker。fix 前は jq 沈黙 abort で
+    # health=active→古い marker で allow。fix 後は corrupt→fail-closed scoped で git push を block。
+    jq '.gates[0].key="x" | del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    local marker
+    marker=$(bash -c "source '$LIB' && ep_marker_name git-push 'git push origin main'")
+    mkdir -p "$ENFORCE_MARKER_DIR"
+    touch -d '2000-01-01' "$ENFORCE_MARKER_DIR/$marker"
+    run bash -c "printf '%s' '$(_json "git push origin main")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

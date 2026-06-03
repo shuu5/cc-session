@@ -503,3 +503,34 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_policy_health"
     [[ "$output" == "active" ]]
 }
+
+# 非 object .key/.match は jq の index abort(rc=5)を招き、旧 process-subst では沈黙して検証ループが骨抜きに
+# なり no-TTL gate を取りこぼす fail-open（第2ラウンド CONFIRMED）。probe 型ガード＋ループの rc 捕捉で corrupt。
+@test "health: .key が非 object（文字列）の gate は corrupt（jq index abort の沈黙化を防ぐ）" {
+    jq '.gates[2].key="brokenstr"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .key が非 object（数値/配列/真偽）でも corrupt（{}・null は許容）" {
+    jq '.gates[2].key=42' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].key=[1,2]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].key=true' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: 壊れた .key gate が前順でも後順の no-TTL gate を取りこぼさず corrupt（順序非依存・第2ラウンド回帰）" {
+    # gates[0] を壊れ .key（前順）、gates[1] git-push を no-TTL（後順）に。旧 process-subst では gates[0] の
+    # jq index abort が沈黙し gates[1] の id を取りこぼして active＝fail-open になった。
+    jq '.gates[0].key="x" | del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .match が非 object の gate も corrupt（ERE 検証ループの jq abort 沈黙化を防ぐ）" {
+    jq '.gates[2].match="notanobject"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}

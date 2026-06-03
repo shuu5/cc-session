@@ -81,18 +81,25 @@ ep_policy_health() {
             ( [[ "probe" =~ $re ]] ) 2>/dev/null
             [ $? -eq 2 ] && { echo corrupt; return 0; }
         done < <(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null)
-        # TTL 健全性: sha_keyed!=true の gate は有限 TTL が必須。無いと marker が無期限化し恒久 unlock の
-        # fail-open になる（authoring の TTL 書き忘れを黙認せず surface する＝Position B）。sha_keyed=true は
-        # head SHA 変化で marker 名が変わり自動失効するため TTL 必須から除外する。
-        # ★判定はランタイムと同一の ep_gate_ttl で行う（jq 再実装との乖離＝ERE 検証エンジン乖離の教訓を作らない。
-        #   ep_gate_ttl は非整数/負/null/不在をすべて「空＝無期限」に倒すので、その全てを corrupt として検出する）。
-        local gid sk
-        while IFS=$'\t' read -r gid sk; do
+        # TTL 健全性: ランタイムが sha-key しない gate（marker が固定名＝自動失効しない gate）は有限 TTL が
+        # 必須。無いと marker が無期限化し恒久 unlock の fail-open になる（authoring の TTL 書き忘れを黙認せず
+        # surface する＝Position B）。sha_keyed（boolean true / 文字列 "true"）の gate は head SHA 変化で
+        # marker 名が変わり自動失効するため TTL 必須から除外する。
+        # ★sha_keyed-ness の判定は jq 内で行い、bash 側で sha_keyed 値を再パースしない。
+        #   理由: タブ隣接文字列 "true\t" 等が bash の `IFS=$'\t' read` で "true" に化け、runtime の
+        #   生文字列比較 [ "$sha_keyed" = "true" ]（ep_marker_sha_suffix）と乖離し、health=active のまま
+        #   固定 marker が無期限 unlock になる「二重表現の再パース乖離」を防ぐ（事故③ ERE エンジン乖離と同型）。
+        #   jq の `== true or == "true"` は ep_gate_field の `jq -r // empty == "true"` と同一の exempt 集合
+        #   （boolean true / 文字列 "true" のみ）を与え、runtime と一致する。
+        #   .id は上で ^[a-z0-9-]+$ を保証済み＝タブ/改行を載せられず改行 iterate は安全。
+        #   TTL 自体の有効性はランタイムと同一の ep_gate_ttl で判定（非整数/負/null/不在を空＝無期限に倒すので
+        #   その全てを corrupt 検出。jq 再実装しない＝ERE 検証エンジン乖離の教訓）。
+        local gid
+        while IFS= read -r gid; do
             [ -z "$gid" ] && continue
-            [ "$sk" = "true" ] && continue
             [ -n "$(ep_gate_ttl "$gid")" ] && continue
             echo corrupt; return 0
-        done < <(jq -r '.gates[]? | "\(.id)\t\(.key.sha_keyed)"' "$f" 2>/dev/null)
+        done < <(jq -r '.gates[]? | select(((.key.sha_keyed == true) or (.key.sha_keyed == "true")) | not) | .id' "$f" 2>/dev/null)
     fi
     echo "$probe"
 }

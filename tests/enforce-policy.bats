@@ -481,3 +481,25 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_policy_health"
     [[ "$output" == "corrupt" ]]
 }
+
+# sha_keyed-ness は jq 内で判定する（bash で再パースしない）。タブ隣接文字列の IFS read 乖離回帰（adversarial review）。
+@test "health: sha_keyed 文字列でタブ隣接 \"true<TAB>\" は exempt されず TTL 必須→corrupt（IFS read 再パース乖離・ccs-5p4.1）" {
+    # bash の IFS=$'\t' read だと末尾タブ欄が捨てられ "true" に化け exempt→active になる乖離を防ぐ。
+    # runtime は生の "true\t" を [ = "true" ] で偽と見て固定 marker を無期限化するため、health=active は恒久 unlock。
+    jq '.gates[2].key.sha_keyed="true\t" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed 文字列の先頭タブ \"<TAB>true\" も exempt されず corrupt" {
+    jq '.gates[2].key.sha_keyed="\ttrue" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed が文字列 \"true\"（タブ無し）は runtime と同じく exempt＝TTL 無しでも active" {
+    # ep_marker_sha_suffix の [ "$sha_keyed" = "true" ] は文字列 "true" も真＝sha-key する。health も同 exempt 集合。
+    jq '.gates[2].key.sha_keyed="true" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}

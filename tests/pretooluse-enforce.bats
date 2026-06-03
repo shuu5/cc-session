@@ -179,6 +179,18 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [[ "$output" == *"fail-closed"* ]]
 }
 
+@test "hook: sha_keyed=\"true<TAB>\"・TTL 欠落 gate は corrupt→block（health↔runtime 乖離による恒久 unlock の回帰・ccs-5p4.1）" {
+    # fix 前: health=active かつ runtime は固定 marker（sha 無し・無期限）→ 古い marker で terraform apply が allow。
+    # fix 後: health=corrupt→fail-closed scoped で terraform（builtin danger）を block。
+    jq '.gates[2].key.sha_keyed="true\t" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    local marker
+    marker=$(bash -c "source '$LIB' && ep_marker_name deploy 'terraform apply'")
+    mkdir -p "$ENFORCE_MARKER_DIR"
+    touch -d '2000-01-01' "$ENFORCE_MARKER_DIR/$marker"
+    run bash -c "printf '%s' '$(_json "terraform apply")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

@@ -53,7 +53,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / subject_prefix 形式不正 / 無効 or 空 or 非スペース空白を含む ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 or 重複 / .key・.match 型不正 / any_re 不在・非配列 / risk_flags 型不正 / subject_prefix 形式不正 / 無効 or 空 or 非スペース空白を含む ERE（any_re/subject/sha_validate/risk_flags）/ sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -70,6 +70,13 @@ ep_policy_health() {
         if (.schema != "cc-session/enforce-policy") then "corrupt"
         elif ((.version // 0) | type) != "number" then "corrupt"
         elif ((.gates // []) | map(.id) | any(. == null or (test("^[a-z0-9-]+$") | not))) then "corrupt"
+        # ★gate id は marker 名前空間のキー（marker は <gid>-... で導出され、disamb hash も gid を含む）。
+        #   同一 id の 2 gate は名前空間を共有するため、良性 gate 用の unlock marker を危険 gate が流用でき
+        #   （both sha_keyed:true だと TTL ループも免除され health=active のまま）認可スコープが漏洩する
+        #   （ccs-5p4.8: R3 が実 hook exit 0 を CONFIRMED）。disamb は gate 内容から導出され gid 共有を救えない
+        #   ため、ここで id 一意性を強制し corrupt（fail-closed scoped）へ倒す。上の id 形式検証が先行するので
+        #   この時点で全 id は非 null の正規文字列＝unique は安全。
+        elif ((.gates // []) | map(.id) | (length != (unique | length))) then "corrupt"
         elif ((.gates // []) | map(.key) | any((. != null) and (type != "object"))) then "corrupt"
         elif ((.gates // []) | any(
                 ((.match | type) != "object")

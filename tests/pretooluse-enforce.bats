@@ -203,6 +203,14 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 2 ]
 }
 
+@test "hook: .match.any_re=object の gate は corrupt→block（gate 沈黙不発による fail-open の E2E 回帰・ccs-5p4.6）" {
+    # fix 前: health=active かつ deploy の any_re が object の値へ黙改変され terraform apply に非マッチ→ALLOW。
+    # fix 後: health=corrupt→fail-closed scoped で terraform（builtin danger）を block。
+    jq '.gates[2].match.any_re={"k":"NONMATCH"}' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "printf '%s' '$(_json "terraform apply -auto-approve")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

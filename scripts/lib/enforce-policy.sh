@@ -50,7 +50,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / .key・.match 型不正 / any_re 不在・非配列 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -64,6 +64,13 @@ ep_policy_health() {
         elif ((.version // 0) | type) != "number" then "corrupt"
         elif ((.gates // []) | map(.id) | any(. == null or (test("^[a-z0-9-]+$") | not))) then "corrupt"
         elif ((.gates // []) | map(.key) | any((. != null) and (type != "object"))) then "corrupt"
+        elif ((.gates // []) | any(
+                ((.match | type) != "object")
+                or ((.match.any_re | type) != "array")
+                or ((.match.any_re | length) == 0)
+                or (.match.any_re | any(type != "string"))
+                or ((.match.all // []) | (type != "array") or any(type != "string"))
+              )) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"
         else "active" end

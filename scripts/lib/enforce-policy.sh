@@ -50,7 +50,7 @@ ep_policy_file() { printf '%s' "$ENFORCE_POLICY_FILE"; }
 #     absent     = ファイル不在 or 空（C-5 opt-in 不成立 → allow）
 #     off        = enforce != true（policy 在りでも明示無効化 → allow）
 #     active     = 正常稼働
-#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正（→ fail-closed scoped）
+#     corrupt    = JSON 不正 / schema 不一致 / gate id 不正 / 無効 ERE / sha_keyed!=true gate の TTL 未指定（→ fail-closed scoped）
 #     nojq       = jq 不在（→ fail-closed scoped）
 #     badversion = version > VERSION_MAX（→ fail-closed scoped）
 #   hook はこの 1 語で step1/step5 を分岐する。jq は 1 回だけ呼ぶ（hot path 配慮）。
@@ -63,6 +63,7 @@ ep_policy_health() {
         if (.schema != "cc-session/enforce-policy") then "corrupt"
         elif ((.version // 0) | type) != "number" then "corrupt"
         elif ((.gates // []) | map(.id) | any(. == null or (test("^[a-z0-9-]+$") | not))) then "corrupt"
+        elif ((.gates // []) | map(.key) | any((. != null) and (type != "object"))) then "corrupt"
         elif ((.version // 0) > '"$ENFORCE_POLICY_VERSION_MAX"') then "badversion"
         elif (.enforce != true) then "off"
         else "active" end
@@ -72,7 +73,13 @@ ep_policy_health() {
         # 全 gate の ERE（any_re / subject_re / sha_validate_re）が実際にコンパイルできるか検証する。
         # 無効 ERE は [[ =~ ]] で決して真にならず gate が「黙って無効化」され危険操作を allow に倒す。
         # これを corrupt 化して C-6（builtin danger への scoped fail-closed）へ落とす。
-        local re
+        # ★jq 出力は process-subst でなく変数へ捕捉し rc を見る。jq が途中 abort（例 .match や .key が非 object で
+        #   index 不能 → rc=5）しても `2>/dev/null` に飲まれて「沈黙の 0 反復」になり ERE 検証が骨抜きになる
+        #   （無効 ERE の silent 失効＝fail-open）のを防ぐ。abort は順序に依らず corrupt へ surface する。
+        #   probe の .key 型ガードと併せた多層防御。local 宣言と代入は分離（local の rc が代入 rc を隠す罠を回避）。
+        local re _eres
+        _eres=$(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null) \
+            || { echo corrupt; return 0; }
         while IFS= read -r re; do
             [ -z "$re" ] && continue
             # ★検証は実マッチと同一エンジン（bash [[ =~ ]]）で行う。grep -qE とは ERE 方言が異なり
@@ -80,7 +87,30 @@ ep_policy_health() {
             #   bash の =~ はコンパイル不能を rc=2 で返すので、それを corrupt 判定に使う。
             ( [[ "probe" =~ $re ]] ) 2>/dev/null
             [ $? -eq 2 ] && { echo corrupt; return 0; }
-        done < <(jq -r '.gates[]? | (.match.any_re[]?, .key.subject_re[]?, (.key.sha_validate_re // empty))' "$f" 2>/dev/null)
+        done <<< "$_eres"
+        # TTL 健全性: ランタイムが sha-key しない gate（marker が固定名＝自動失効しない gate）は有限 TTL が
+        # 必須。無いと marker が無期限化し恒久 unlock の fail-open になる（authoring の TTL 書き忘れを黙認せず
+        # surface する＝Position B）。sha_keyed（boolean true / 文字列 "true"）の gate は head SHA 変化で
+        # marker 名が変わり自動失効するため TTL 必須から除外する。
+        # ★sha_keyed-ness の判定は jq 内で行い、bash 側で sha_keyed 値を再パースしない。
+        #   理由: タブ隣接文字列 "true\t" 等が bash の `IFS=$'\t' read` で "true" に化け、runtime の
+        #   生文字列比較 [ "$sha_keyed" = "true" ]（ep_marker_sha_suffix）と乖離し、health=active のまま
+        #   固定 marker が無期限 unlock になる「二重表現の再パース乖離」を防ぐ（事故③ ERE エンジン乖離と同型）。
+        #   jq の `== true or == "true"` は ep_gate_field の `jq -r // empty == "true"` と同一の exempt 集合
+        #   （boolean true / 文字列 "true" のみ）を与え、runtime と一致する。
+        #   .id は上で ^[a-z0-9-]+$ を保証済み＝タブ/改行を載せられず改行 iterate は安全。
+        #   TTL 自体の有効性はランタイムと同一の ep_gate_ttl で判定（非整数/負/null/不在を空＝無期限に倒すので
+        #   その全てを corrupt 検出。jq 再実装しない＝ERE 検証エンジン乖離の教訓）。
+        # ERE ループ同様に変数捕捉＋rc チェック（jq abort を順序非依存で corrupt へ surface。
+        # 非 object .key が前順 gate にあると process-subst では沈黙 abort し no-TTL gate を取りこぼす fail-open）。
+        local gid _ttlids
+        _ttlids=$(jq -r '.gates[]? | select(((.key.sha_keyed == true) or (.key.sha_keyed == "true")) | not) | .id' "$f" 2>/dev/null) \
+            || { echo corrupt; return 0; }
+        while IFS= read -r gid; do
+            [ -z "$gid" ] && continue
+            [ -n "$(ep_gate_ttl "$gid")" ] && continue
+            echo corrupt; return 0
+        done <<< "$_ttlids"
     fi
     echo "$probe"
 }

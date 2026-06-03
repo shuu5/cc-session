@@ -448,3 +448,89 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [ "$status" -eq 0 ]
     [[ "$output" == *"/.claude-session/enforce-policy.json|"*"/.claude-session/enforce-markers|5"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# fail-closed 強化（TTL 未指定 gate の無期限 marker＝恒久 unlock を surface・ccs-5p4.1）
+#   sha_keyed=false gate は有限 TTL が無いと marker が無期限化し恒久 unlock の fail-open。
+#   health が ep_gate_ttl と同一基準で TTL 必須を要求し corrupt（→fail-closed scoped）に倒す。
+#   ※判定はランタイムの ep_gate_ttl で行い、jq 再実装との乖離（ERE 検証の教訓）を作らない。
+# ---------------------------------------------------------------------------
+
+@test "health: sha_keyed=false gate に有効 TTL が無い（gate も default も）と corrupt" {
+    # git-push (gates[1]) は sha_keyed=false。marker_ttl_sec を削除し default も null → 無期限化
+    jq 'del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed=false gate も default_marker_ttl_sec で TTL を得れば active" {
+    jq 'del(.gates[1].marker_ttl_sec) | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=900' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}
+
+@test "health: sha_keyed=true gate は TTL 不在でも active（head SHA 変化で自動失効＝TTL 必須から除外）" {
+    # pr-merge (gates[0]) は sha_keyed=true。TTL を消しても git-push/deploy は TTL 在り → active
+    jq 'del(.gates[0].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}
+
+@test "health: sha_keyed=false gate の TTL が非整数（負/小数等）でも corrupt（ep_gate_ttl が空=無期限に倒すため）" {
+    jq '.gates[1].marker_ttl_sec="-5" | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+# sha_keyed-ness は jq 内で判定する（bash で再パースしない）。タブ隣接文字列の IFS read 乖離回帰（adversarial review）。
+@test "health: sha_keyed 文字列でタブ隣接 \"true<TAB>\" は exempt されず TTL 必須→corrupt（IFS read 再パース乖離・ccs-5p4.1）" {
+    # bash の IFS=$'\t' read だと末尾タブ欄が捨てられ "true" に化け exempt→active になる乖離を防ぐ。
+    # runtime は生の "true\t" を [ = "true" ] で偽と見て固定 marker を無期限化するため、health=active は恒久 unlock。
+    jq '.gates[2].key.sha_keyed="true\t" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed 文字列の先頭タブ \"<TAB>true\" も exempt されず corrupt" {
+    jq '.gates[2].key.sha_keyed="\ttrue" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: sha_keyed が文字列 \"true\"（タブ無し）は runtime と同じく exempt＝TTL 無しでも active" {
+    # ep_marker_sha_suffix の [ "$sha_keyed" = "true" ] は文字列 "true" も真＝sha-key する。health も同 exempt 集合。
+    jq '.gates[2].key.sha_keyed="true" | del(.gates[2].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}
+
+# 非 object .key/.match は jq の index abort(rc=5)を招き、旧 process-subst では沈黙して検証ループが骨抜きに
+# なり no-TTL gate を取りこぼす fail-open（第2ラウンド CONFIRMED）。probe 型ガード＋ループの rc 捕捉で corrupt。
+@test "health: .key が非 object（文字列）の gate は corrupt（jq index abort の沈黙化を防ぐ）" {
+    jq '.gates[2].key="brokenstr"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .key が非 object（数値/配列/真偽）でも corrupt（{}・null は許容）" {
+    jq '.gates[2].key=42' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].key=[1,2]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].key=true' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: 壊れた .key gate が前順でも後順の no-TTL gate を取りこぼさず corrupt（順序非依存・第2ラウンド回帰）" {
+    # gates[0] を壊れ .key（前順）、gates[1] git-push を no-TTL（後順）に。旧 process-subst では gates[0] の
+    # jq index abort が沈黙し gates[1] の id を取りこぼして active＝fail-open になった。
+    jq '.gates[0].key="x" | del(.gates[1].marker_ttl_sec) | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .match が非 object の gate も corrupt（ERE 検証ループの jq abort 沈黙化を防ぐ）" {
+    jq '.gates[2].match="notanobject"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}

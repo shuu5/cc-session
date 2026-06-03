@@ -849,3 +849,38 @@ _stub_gh() {  # $1 = stdout として返す文字列
     jq '.gates[0].key.subject_prefix="pr"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
     run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "active" ]]
 }
+
+# ---------------------------------------------------------------------------
+# ccs-5p4.8: gate-id 一意性（duplicate gate-id の marker 衝突＝認可スコープ漏洩を fail-closed 化）
+# ---------------------------------------------------------------------------
+
+@test "health: gate id 重複は corrupt（symmetric dup・dup-id marker 衝突 leak 防止・ccs-5p4.8）" {
+    # 同一 id の 2 gate は marker 名前空間（gid キー）を共有するため、良性 gate の unlock が危険 gate を
+    # 認可しうる（認可スコープ漏洩）。disamb hash は gate 内容（gid/strategy/prefix/subject/risk/sha）から
+    # 導出されるので gid 共有そのものは救えない。→ health で id 一意性を強制し corrupt（fail-closed scoped）へ倒す。
+    jq '.gates += [.gates[0]]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: 同一 id・both sha_keyed の非対称 dup gate（R3 PoC）も corrupt＝marker 衝突を fail-closed 化（ccs-5p4.8）" {
+    # 第3ラウンド review が CONFIRMED した pre-existing fail-open の正確な再現構成: 良性(--squash)と
+    # 危険(--admin)が同一 marker に衝突し、良性 unlock が危険操作を実 hook exit 0 で認可していた。
+    # both sha_keyed:true は no-TTL gate の TTL ループを免除されるため従来 active を返し leak へ到達していた。
+    cat > "$ENFORCE_POLICY_FILE" <<'JSON'
+{ "schema":"cc-session/enforce-policy","version":1,"enforce":true,"gates":[
+  {"id":"pr-merge","match":{"any_re":["gh +pr +merge +[0-9]+ +--squash"]},
+   "key":{"strategy":"token","subject_prefix":"pr-","subject_re":["pr +merge +([0-9]+)"],"sha_keyed":true,"sha_cmd":["echo","DEADBEEF"],"sha_len":8},"marker_ttl_sec":3600},
+  {"id":"pr-merge","match":{"any_re":["gh +pr +merge +[0-9]+ +--admin"]},
+   "key":{"sha_keyed":true,"sha_cmd":["echo","DEADBEEF"],"sha_len":8}}
+]}
+JSON
+    # leak 機構の確認: 2 コマンドの marker は実際に衝突する（gid 共有＋fields 一致＝disamb でも塞げない）
+    local sq adm
+    sq=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 7 --squash'")
+    adm=$(bash -c "source '$LIB' && ep_marker_name pr-merge 'gh pr merge 7 --admin'")
+    [ -n "$sq" ] && [ "$sq" = "$adm" ]
+    # だが health が id 一意性を強制し leak 到達を断つ
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}

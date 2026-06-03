@@ -255,6 +255,26 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     [ "$status" -eq 2 ]
 }
 
+# dup-id leak e2e（ccs-5p4.8）: 同一 id・both sha_keyed の dup gate では良性 unlock が危険操作を認可しない
+@test "hook: dup gate-id（both sha_keyed）で危険 --admin は block（dup-id leak を fail-closed 化・ccs-5p4.8）" {
+    # fix 前: health=active のまま良性 --squash の unlock marker を危険 --admin が同一 marker で流用し exit 0。
+    # fix 後: id 一意性検証で health=corrupt → step5 fail-closed scoped → builtin danger（gh pr merge）で block。
+    cat > "$ENFORCE_POLICY_FILE" <<'JSON'
+{ "schema":"cc-session/enforce-policy","version":1,"enforce":true,"gates":[
+  {"id":"pr-merge","match":{"any_re":["gh +pr +merge +[0-9]+ +--squash"]},
+   "key":{"strategy":"token","subject_prefix":"pr-","subject_re":["pr +merge +([0-9]+)"],"sha_keyed":true,"sha_cmd":["echo","DEADBEEF"],"sha_len":8},"marker_ttl_sec":3600},
+  {"id":"pr-merge","match":{"any_re":["gh +pr +merge +[0-9]+ +--admin"]},
+   "key":{"sha_keyed":true,"sha_cmd":["echo","DEADBEEF"],"sha_len":8}}
+]}
+JSON
+    # 良性 --squash の unlock は corrupt 化により拒否される（marker を作れない＝二重防御）
+    run "$ROOT_DIR/scripts/enforce-unlock" pr-merge "gh pr merge 7 --squash"
+    [ "$status" -ne 0 ]
+    # 危険 --admin は fail-closed scoped で block（exit 2）
+    run bash -c "printf '%s' '$(_json "gh pr merge 7 --admin")' | '$HOOK'"
+    [ "$status" -eq 2 ]
+}
+
 # ---------------------------------------------------------------------------
 # hooks.json 登録（C-8・P2-T3 回帰）
 # ---------------------------------------------------------------------------

@@ -573,3 +573,61 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_policy_health"
     [[ "$output" == "active" ]]
 }
+
+# ---------------------------------------------------------------------------
+# TTL 値 hardening（先頭ゼロの8進誤解釈・巨大値の事実上恒久 unlock・ccs-5p4.5）
+# ---------------------------------------------------------------------------
+
+@test "ep_gate_ttl: 先頭ゼロ \"0900\" は 10 進 900（8進誤解釈なし・ccs-5p4.5）" {
+    jq '.gates[1].marker_ttl_sec="0900"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"
+    [[ "$output" == "900" ]]
+}
+
+@test "ep_gate_ttl: \"0100\" は 100（8進 64 でない＝silent 縮小を防ぐ）" {
+    jq '.gates[1].marker_ttl_sec="0100"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"
+    [[ "$output" == "100" ]]
+}
+
+@test "ep_gate_ttl: 上限超過の巨大 TTL は空（事実上の恒久 unlock を無効化・ccs-5p4.5）" {
+    jq '.gates[1].marker_ttl_sec=900000000000' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"
+    [ -z "$output" ]
+}
+
+@test "ep_gate_ttl: 18 桁超の超巨大値は空（64bit overflow 回避）" {
+    jq '.gates[1].marker_ttl_sec="999999999999999999999"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"
+    [ -z "$output" ]
+}
+
+@test "ep_gate_ttl: 上限ちょうどは値・上限+1 は空" {
+    jq '.gates[1].marker_ttl_sec=2592000' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"; [[ "$output" == "2592000" ]]
+    jq '.gates[1].marker_ttl_sec=2592001' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_gate_ttl git-push"; [ -z "$output" ]
+}
+
+@test "ep_gate_ttl: ENFORCE_TTL_MAX_SEC は env で上書き可（上限縮小）" {
+    jq '.gates[1].marker_ttl_sec=100' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "export ENFORCE_TTL_MAX_SEC=50; source '$LIB' && ep_gate_ttl git-push"
+    [ -z "$output" ]
+}
+
+@test "health: 巨大 TTL の sha_keyed=false gate は corrupt（ep_gate_ttl 空→TTL 必須未充足・ccs-5p4.5）" {
+    jq '.gates[1].marker_ttl_sec=900000000000 | .default_marker_ttl_sec=null' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "marker_valid: \"0900\" TTL でも8進エラーなく判定（fresh=valid / aged=expired・ccs-5p4.5）" {
+    jq '.gates[1].marker_ttl_sec="0900"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    mkdir -p "$ENFORCE_MARKER_DIR"
+    touch "$ENFORCE_MARKER_DIR/git-push-test"
+    run bash -c "source '$LIB' && ep_marker_valid git-push git-push-test"
+    [ "$status" -eq 0 ]
+    touch -d '2000-01-01' "$ENFORCE_MARKER_DIR/git-push-test"
+    run bash -c "source '$LIB' && ep_marker_valid git-push git-push-test"
+    [ "$status" -eq 1 ]
+}

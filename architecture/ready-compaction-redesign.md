@@ -266,7 +266,7 @@ hook の判定フロー（1 Bash 呼び出しごと、C-2/4/5/6 の合成）:
 
 あわせて MEDIUM/LOW を一部前倒し: pr-merge subject_re の flag-before-number 対応（`merge[^0-9]*#?([0-9]+)`）、裸 `deploy` トークン除去（`git commit -m deploy` 誤爆解消）、subject 検証の先頭ダッシュ禁止、`ep_marker_valid` の stat 失敗時 block（fail-open 是正）。
 
-**残る follow-up（beads epic `ccs-5p4` で追跡）**: settings.json env 経由の恒久 OFF（C-7 の単一 env 依存・`ccs-5p4.2`）、any_re 無し gate の許容（`ccs-5p4.3`）、marker dir の権限分離による hard 化（HIGH#5 の技術強制への格上げ・`ccs-5p4.4`）。**✅ 解消済**: TTL 未指定 gate の無期限化（`ccs-5p4.1`）＝`ep_policy_health` が sha_keyed≠true gate に有限 TTL を必須化し、無ければ corrupt→fail-closed scoped に倒す（ランタイムと同一の `ep_gate_ttl` で判定。authoring 落とし穴を黙認せず surface する＝Position B）。
+**残る follow-up（beads epic `ccs-5p4` で追跡）**: settings.json env 経由の恒久 OFF（C-7 の単一 env 依存・`ccs-5p4.2`）、TTL 値の hardening（巨大値の事実上恒久 unlock・先頭ゼロ8進・`ccs-5p4.5`）、marker dir の権限分離による hard 化（HIGH#5 の技術強制への格上げ・`ccs-5p4.4`）。**✅ 解消済**: (1) TTL 未指定 gate の無期限化（`ccs-5p4.1`）＝`ep_policy_health` が sha_keyed≠true gate に有限 TTL を必須化し、無ければ corrupt→fail-closed scoped に倒す（ランタイムと同一の `ep_gate_ttl` で判定。Position B）。(2) `.match` schema 検証（`ccs-5p4.3`＋`ccs-5p4.6`）＝probe で `.match` を object・`any_re` を非空の文字列配列に必須化（substring-only の .all 単独 gate と、`any_re`=object 等の沈黙 fail-open を corrupt 化）。`.key`・`.match` 型不正や jq index abort も probe ガード＋ループ rc 捕捉で順序非依存に corrupt へ surface。
 
 健全と再確認された点（誤検出として却下含む）: 決定性・hook↔helper の marker 名一致・SHA/subject の fail-closed 伝播（exit 3/4）・argv injection 防御・`%q`・`_ep_slug` のパストラバーサル無効化・lib が marker を作らない（C-4b は lib レベルで SOLID）・ReDoS なし。
 

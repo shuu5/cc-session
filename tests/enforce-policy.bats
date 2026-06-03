@@ -534,3 +534,42 @@ _stub_gh() {  # $1 = stdout として返す文字列
     run bash -c "source '$LIB' && ep_policy_health"
     [[ "$output" == "corrupt" ]]
 }
+
+# .match schema 検証（ccs-5p4.6 + ccs-5p4.3）: any_re は非空の文字列配列を必須。
+#  any_re=object は any_re[]? が値へ黙って書き換わり gate 不発→沈黙 fail-open（5p4.6）。
+#  any_re 不在は substring-only の .all 単独 gate＝境界無しの footgun のため不許可（5p4.3）。
+@test "health: .match.any_re が object は corrupt（any_re[]? の値黙改変で gate 不発する fail-open・ccs-5p4.6）" {
+    jq '.gates[2].match.any_re={"k":"NONMATCH"}' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: any_re 不在の gate は corrupt（substring-only .all 単独を不許可＝境界認識 any_re 必須・ccs-5p4.3）" {
+    jq 'del(.gates[2].match.any_re) | .gates[2].match.all=["terraform","apply"]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "corrupt" ]]
+}
+
+@test "health: any_re が空配列/非文字列要素/スカラは corrupt" {
+    jq '.gates[2].match.any_re=[]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].match.any_re=[42]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[2].match.any_re="terraform"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .match.all が非配列/非文字列要素は corrupt（在る場合のみ検証・省略は可）" {
+    jq '.gates[0].match.all="gh"' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+    jq '.gates[0].match.all=[1,2]' "$EXAMPLE" > "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"; [[ "$output" == "corrupt" ]]
+}
+
+@test "health: .all 省略・any_re のみの gate（例の deploy）は active（.all は任意・any_re-only は正当）" {
+    # substring-only(.all 単独)の禁止であって、境界認識 any_re のみの gate は許容。
+    jq -e '.gates[2] | (has("match")) and (.match | has("all") | not) and (.match.any_re | type=="array")' "$EXAMPLE" >/dev/null
+    cp "$EXAMPLE" "$ENFORCE_POLICY_FILE"
+    run bash -c "source '$LIB' && ep_policy_health"
+    [[ "$output" == "active" ]]
+}

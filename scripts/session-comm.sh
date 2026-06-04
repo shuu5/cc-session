@@ -350,7 +350,9 @@ cmd_inject_file() {
     local file_path=""
     local force=false
     local no_enter=false
-    local wait_timeout=0  # 0 = 待機なし（単発チェック）
+    local wait_timeout=0       # 0 = 待機なし（単発チェック）
+    local confirm_receipt=0    # 0 = 送達 read-back なし（後方互換・既定）。>0 で paste 後に受理を確認（ccs-ldt）
+    local clear_first=false    # true で paste 前に C-u 送出（再送時の部分入力クリア・重複防止）
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -369,6 +371,18 @@ cmd_inject_file() {
                     exit 1
                 fi
                 shift 2
+                ;;
+            --confirm-receipt)
+                confirm_receipt="${2:-8}"
+                if ! [[ "$confirm_receipt" =~ ^[1-9][0-9]*$ ]]; then
+                    echo "Error: --confirm-receipt requires a positive integer" >&2
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --clear-first)
+                clear_first=true
+                shift
                 ;;
             -*)
                 echo "Error: unknown option '$1'" >&2
@@ -427,6 +441,12 @@ cmd_inject_file() {
         fi
     fi
 
+    # --clear-first: 再送時に入力欄へ残る部分 paste を C-u でクリアし、再 paste の重複を防ぐ（ccs-ldt）。
+    # 入力欄が空なら C-u は no-op。初回送達では通常不要（cld-spawn は再送時のみ付与）。
+    if $clear_first; then
+        tmux send-keys -t "$target" C-u 2>/dev/null || true
+    fi
+
     # tmux load-buffer + paste-buffer で改行を含むテキストを安全に送達
     # 前提: tmux >= 2.0 (delete-buffer -b は tmux 2.0+ で追加)
     # named buffer でバッファ衝突を防止 (#1050)
@@ -476,6 +496,29 @@ cmd_inject_file() {
         # 完了する前に Enter が到着するタイミング問題を回避。#234）
         sleep 0.3
         session_msg send "$target" "" --enter-only
+    fi
+
+    # 送達 read-back（ccs-ldt）: --confirm-receipt 指定かつ Enter 送出時のみ。
+    # paste 成功（tmux 層）だけでは「claude が prompt を受理した」ことを意味しない。
+    # 起動時 welcome 画面は bracketed paste を drop しうる（送信は成功扱いだが prompt は未着）。
+    # ここで claude が prompt を受理し processing へ遷移したかを state ポーリングで確認し、
+    # budget 内に processing を観測できなければ非 0(=4) で返して「偽成功」を根絶する。
+    # 呼び出し側（cld-spawn）はこの非 0 を受けて settle 後に再送する。
+    if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
+        local _rb_deadline _rb_state _rb_ok=false
+        _rb_deadline=$(( $(date +%s) + confirm_receipt ))
+        while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
+            _rb_state=$("${_state_script_dir}/session-state.sh" state "$window_name" 2>/dev/null) || _rb_state="unknown"
+            case "$_rb_state" in
+                processing)   _rb_ok=true; break ;;   # claude が prompt を受理し実行開始＝着弾
+                error|exited) break ;;                # 異常終了は未着扱い（fail）
+            esac
+            sleep 0.3
+        done
+        if ! $_rb_ok; then
+            echo "Error: prompt not confirmed received by '$window_name' (state=${_rb_state:-unknown} after ${confirm_receipt}s)" >&2
+            exit 4
+        fi
     fi
 }
 

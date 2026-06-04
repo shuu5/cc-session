@@ -35,6 +35,12 @@ if [ -f "$WORKING_MEMORY_FILE" ]; then
     echo ""
     echo "--- 作業状態ここまで ---"
     # consumed マーク（削除せず mv で復元可能性を残す。次回退避で自然に孤立する）。
+    # ★この mv は復元 cat の「後」に置く（順序は意図的・ccs-9pv）。restore landing を優先し、
+    #   フックが cat→mv 間で中断されても復元は landing 済み・working-memory.md も残る（kill 耐性）。
+    #   帰結として consumed への rename は session-state.sh の input-waiting 復帰と「非同期」になる
+    #   （UI 判定はフックのファイル後処理を見ない）。監視/テストは input-waiting 直後に consumed の
+    #   存在を即 assert せず有界ポーリングで待つこと。設計根拠は architecture/compaction-memory-model.md
+    #   「PostCompact のファイル後処理は input-waiting 復帰と非同期」節。
     # 不変条件: 既存 consumed はここで上書きされるが、次サイクルの PreCompact / ready-compaction が
     # emit_working_memory 経由で旧 consumed の「命令・制約」節を新 working へ機械 carry-forward 済みのため、
     # pre→post を正しくペアリングする限り命令は失われない（post が pre 抜きで連続発火する病的列でのみ要注意）。

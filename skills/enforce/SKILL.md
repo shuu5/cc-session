@@ -111,8 +111,18 @@ ep_policy_health   # → active であること
 
 人間に次を伝える:
 - 以降、当該コマンドは marker が無い限りブロックされる（opt-in は policy の存在＝C-5）。
-- 承認するときは**人間が生シェルで** `${CLAUDE_PLUGIN_ROOT}/scripts/enforce-unlock <gate> "<command>"`
-  （または block 時に提示される `touch` コマンド）を `!` で実行する。**Claude は実行しない**。
+- 承認するときは**人間が生シェルで** unlock を `!` で実行する。**Claude は実行しない**。
+  block 時の文面は**貼りやすい 1 物理行**を主提示する（フルパスの `enforce-unlock <gate> '<command>'`。
+  コマンドは単一引用符で 1 トークン化済みなので、改行ズレ・`&&` 片肺実行が起きない）。
+  helper が使えない環境向けに生 `touch` コマンドもフォールバックとして併記される。
+- （任意・ergonomic）フルパスを毎回貼りたくなければ、人間が自分の rc に PATH か shell 関数を置く:
+  ```bash
+  # ~/.bashrc 等（人間の rc 設定＝信頼境界に無影響。叩くのは依然人間）
+  export PATH="${CLAUDE_PLUGIN_ROOT}/scripts:$PATH"        # → enforce-unlock <gate> '<command>'
+  # もしくは:
+  ccs-approve(){ "${CLAUDE_PLUGIN_ROOT}/scripts/enforce-unlock" "$@"; }
+  ```
+  これは env/shell の deliberate な設定で、**marker 作成権限を Claude に渡すものではない**（C-4b 不変）。
 - 緊急停止は人間が `SESSION_ENFORCE_OFF=1` を export、または policy を削除/空化（C-7）。
 
 ## 禁止事項（MUST NOT）

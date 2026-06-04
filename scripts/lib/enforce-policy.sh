@@ -21,6 +21,8 @@ _ENFORCE_POLICY_SH_SOURCED=1
 
 # パス SSOT（ENFORCE_POLICY_FILE / ENFORCE_MARKER_DIR / ENFORCE_SHA_TIMEOUT）を連鎖 source。
 _EP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# enforce-unlock helper（scripts/ 直下・PATH 非依存）の所在。block 文面で貼りやすい 1 行を提示する用。
+_EP_SCRIPTS_DIR="$(cd "$_EP_LIB_DIR/.." && pwd)"
 # shellcheck source=./session-env.sh
 source "$_EP_LIB_DIR/session-env.sh" 2>/dev/null || true
 # session-env.sh だけが欠落しても set -u 下で unbound にならぬよう安全デフォルトへ再フォールバック
@@ -377,8 +379,30 @@ ep_marker_valid() {
     [ $((mtime + ttl)) -ge "$now" ]
 }
 
+# _ep_shell_quote <string>
+#   生シェルへ安全に貼れる 1 トークンを stdout（POSIX 単一引用符クォート。埋め込み ' は '\'' へ）。
+#   %q は空白を `\ ` に化けさせ可読性を損なうため、貼りやすさ重視でこちらを使う（block 文面用）。
+_ep_shell_quote() {
+    local s=$1
+    s=${s//\'/\'\\\'\'}
+    printf "'%s'" "$s"
+}
+
+# ep_unlock_helper_command <gate_id> <normalized_command>
+#   人間が貼りやすい 1 物理行（enforce-unlock helper 経由の unlock）を stdout。
+#   helper はフルパス（PATH 非依存でそのまま貼れる）、コマンドは単一引用符で 1 トークン化
+#   （スペース・メタ文字を含んでも改行ズレ・&& 片肺実行が起きない）。
+#   helper は叩いた時点で ep_marker_name を再導出する（sha_keyed は head SHA を織り込む）＝
+#   操作インスタンス性を保存（固定 marker 名を貼るより安全側）。lib 自身は marker を作らない（C-4b）。
+ep_unlock_helper_command() {
+    # helper パス・gate_id は %q（通常は無変更で可読・空白入り install path のときだけエスケープ＝1 トークン保証）、
+    # コマンドは _ep_shell_quote（単一引用符で可読＋メタ文字 1 トークン化）。
+    printf '%q %q %s' "$_EP_SCRIPTS_DIR/enforce-unlock" "$1" "$(_ep_shell_quote "$2")"
+}
+
 # ep_unlock_command <marker_name>
-#   人間が生シェルで叩く実コマンド 1 行（marker を作成）を stdout。lib 自身は touch しない（C-4b）。
+#   フォールバックの生コマンド 1 行（helper が無い/SHA 再導出に失敗する環境向け。marker を直接 touch）。
+#   lib 自身は touch しない（C-4b）。helper（ep_unlock_helper_command）が使えない時の保険として併記する。
 ep_unlock_command() {
     printf 'mkdir -p %q && touch %q' "$ENFORCE_MARKER_DIR" "$ENFORCE_MARKER_DIR/$1"
 }
@@ -386,6 +410,7 @@ ep_unlock_command() {
 # ep_block_message <gate_id> <normalized_command> <marker_name>
 #   hook が stderr に流す完成済みブロック文を stdout（description + {subject} 展開した unlock_hint +
 #   人間が叩く unlock コマンド + Claude 自己認可不可の注記）。
+#   unlock は「貼りやすい 1 行 helper」を主提示し、生 touch をフォールバックとして併記する（ccs-cym）。
 ep_block_message() {
     local gid="$1" norm="$2" name="$3" desc hint subject
     desc=$(ep_gate_field "$gid" '.description')
@@ -395,7 +420,9 @@ ep_block_message() {
     printf 'DENIED(enforce/%s): %s\n' "$gid" "$desc"
     [ -n "$hint" ] && printf '  %s\n' "$hint"
     printf '  この操作はレビュー gate 未通過です。Claude は自己認可できません（C-4b）。\n'
-    printf '  承認する人間が次を生シェルで実行してください（! プレフィックス）:\n'
+    printf '  承認する人間が次の 1 行を生シェルで実行してください（! プレフィックス・そのまま貼れる）:\n'
+    printf '    %s\n' "$(ep_unlock_helper_command "$gid" "$norm")"
+    printf '  （helper が使えない/SHA 再導出に失敗する場合は次の生コマンドでも可）:\n'
     printf '    %s\n' "$(ep_unlock_command "$name")"
 }
 

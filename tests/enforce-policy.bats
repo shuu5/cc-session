@@ -390,6 +390,43 @@ _stub_gh() {  # $1 = stdout として返す文字列
     [[ "$output" == *"自己認可"* ]]
 }
 
+@test "block_message: 1 行 enforce-unlock helper を主提示する（フルパス・元コマンド同居）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run bash -c "source '$LIB' && m=\$(ep_marker_name pr-merge 'gh pr merge 3 --squash'); ep_block_message pr-merge 'gh pr merge 3 --squash' \"\$m\""
+    [ "$status" -eq 0 ]
+    # helper をフルパスで提示（PATH 非依存でそのまま貼れる）
+    [[ "$output" == *"/scripts/enforce-unlock"* ]]
+    [[ "$output" == *"enforce-unlock pr-merge"* ]]
+    # 提示行に元コマンドが単一引用符で含まれる（スペース・メタ文字でも崩れない）
+    [[ "$output" == *"'gh pr merge 3 --squash'"* ]]
+    # 既存契約は維持（DENIED ヘッダ・自己認可注記・fallback touch も併記）
+    [[ "$output" == *"DENIED(enforce/pr-merge)"* ]]
+    [[ "$output" == *"自己認可"* ]]
+    [[ "$output" == *"touch"* ]]
+}
+
+@test "unlock_helper: install path に空白があっても helper パスは 1 トークン（%q・finding5 回帰）" {
+    _use_example
+    run bash -c "source '$LIB' && _EP_SCRIPTS_DIR='/opt/my apps/sess/scripts'; line=\$(ep_unlock_helper_command pr-merge 'gh pr merge 3'); eval \"set -- \$line\"; echo \"ARGC=\$#\"; echo \"P=\$1\"; echo \"C=\$3\""
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ARGC=3"* ]]                                   # path が割れていない（=3 トークン）
+    [[ "$output" == *"P=/opt/my apps/sess/scripts/enforce-unlock"* ]]  # path が空白込みで 1 引数
+    [[ "$output" == *"C=gh pr merge 3"* ]]                          # command が 1 引数で復元
+}
+
+@test "block_message: enforce-unlock 提示は単一物理行（コピペ改行ズレ回帰固定）" {
+    _use_example
+    _stub_gh "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+    run bash -c "source '$LIB' && m=\$(ep_marker_name pr-merge 'gh pr merge 3'); ep_block_message pr-merge 'gh pr merge 3' \"\$m\""
+    [ "$status" -eq 0 ]
+    # helper コマンドは厳密に 1 行（複数行に割れていれば片肺/改行ズレ回帰）
+    n=$(printf '%s\n' "$output" | grep -c 'scripts/enforce-unlock')
+    [ "$n" -eq 1 ]
+    line=$(printf '%s\n' "$output" | grep 'scripts/enforce-unlock')
+    [[ "$line" == *"enforce-unlock pr-merge"* && "$line" == *"'gh pr merge 3'"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # 内蔵 danger list / fail-closed(C-6)
 # ---------------------------------------------------------------------------

@@ -83,6 +83,18 @@ effort 一時層（Working Memory ファイル）だけで、恒久命令（→ 
 
 PostCompact は「直前作業の復帰」、SessionStart(compact) は「プロジェクト全体の再認識」と棲み分ける。
 
+### PostCompact のファイル後処理は input-waiting 復帰と非同期（ccs-9pv）
+
+PostCompact（`scripts/hooks/post-compact.sh`）は **① `working-memory.md` を stdout へ `cat`（復元注入）→ ② `working-memory.md` を `consumed.md` へ `mv`** の順で動く。`mv`（②）は復元 `cat`（①）の **後** に置く設計で、これは意図的:
+
+- **restore landing 優先**: 復元テキストが新 context に届くこと（①）を、ファイル整理（②）より先に確実化する。
+- **kill 耐性**: フックが ①→② の間で中断されても、復元は既に landing 済みで `working-memory.md` も残る（再処理可能）。逆に `mv` を先にすると中断時に復元が landing せず、ephemeral な「計画弧」がそのサイクルで失われる。
+
+帰結として、`consumed.md` への rename（②）は **`session-state.sh` が観測する `input-waiting` 復帰と非同期**になる。`detect_state` は tmux pane の表示文字（`❯` プロンプト）だけで状態判定し、フックのファイル後処理の進捗は一切見ない。したがって **`input-waiting` が true になった瞬間に `consumed.md` がまだ生成されていないタイミング窓**が存在しうる（②は①直後の同一プロセス内なので遅延は微小だが、ゼロ保証はない）。
+
+- **機能的実害なし**: 復元（①）は成功し、`consumed.md` は遅れて確実に生成される。次サイクルの carry-forward は PreCompact の `emit_working_memory` が `consumed.md` を読む時点（次の compaction）で効くため、その頃には rename は完了済み。
+- **監視/テスト側の契約**: 親プロセスや統合テストは、`input-waiting` 復帰**直後に `consumed.md` の存在を即 assert してはならない**。出現を**有界ポーリング**で待つこと（即時 assert は偽陰性になりうる）。これは「状態判定（UI）が実完了（フック後処理）より早く true を返す」一般クラスの一例（spawn 起動時の `ccs-ldt` と同根クラス・別メカニズム）。
+
 ## コンポーネント責務
 
 | 責務 | 担当 |

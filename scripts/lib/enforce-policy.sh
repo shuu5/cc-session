@@ -395,7 +395,9 @@ _ep_shell_quote() {
 #   helper は叩いた時点で ep_marker_name を再導出する（sha_keyed は head SHA を織り込む）＝
 #   操作インスタンス性を保存（固定 marker 名を貼るより安全側）。lib 自身は marker を作らない（C-4b）。
 ep_unlock_helper_command() {
-    printf '%s %s %s' "$_EP_SCRIPTS_DIR/enforce-unlock" "$1" "$(_ep_shell_quote "$2")"
+    # helper パス・gate_id は %q（通常は無変更で可読・空白入り install path のときだけエスケープ＝1 トークン保証）、
+    # コマンドは _ep_shell_quote（単一引用符で可読＋メタ文字 1 トークン化）。
+    printf '%q %q %s' "$_EP_SCRIPTS_DIR/enforce-unlock" "$1" "$(_ep_shell_quote "$2")"
 }
 
 # ep_unlock_command <marker_name>

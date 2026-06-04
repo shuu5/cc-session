@@ -64,6 +64,10 @@ _json() { printf '{"tool_input":{"command":"%s"}}' "$1"; }
     run bash -c "printf '%s' '$(_json "gh pr merge 3")' | '$HOOK'"
     [ "$status" -eq 2 ]
     [[ "$output" == *"DENIED(enforce/pr-merge)"* ]]
+    # 主提示: 貼りやすい 1 行 helper（ccs-cym）
+    [[ "$output" == *"/scripts/enforce-unlock pr-merge"* ]]
+    [[ "$output" == *"'gh pr merge 3'"* ]]
+    # フォールバックの生 touch も併記
     [[ "$output" == *"touch"* ]]
 }
 

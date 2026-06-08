@@ -21,7 +21,9 @@
 ## 構成
 
 - `skills/` — `spawn` / `fork` / `ready-compaction` / `enforce` スキル（`/session:spawn` 等で起動）
-- `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-name.sh`, `window-manifest.sh` 等）＋ `enforce-unlock`〔hard 強制の marker を人間が生シェルで作る helper〕
+- `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-comm-backend-tmux.sh`, `session-name.sh`, `window-manifest.sh`, `claude-session-save.sh` 等）＋ `enforce-unlock`〔hard 強制の marker を人間が生シェルで作る helper〕
+  - **spawn の送達は read-back で受理を確認**（tmux paste 成功＝トランスポート層成功 ≠ claude 受理）: `cld-spawn` は `wait-ready`→`inject-file --confirm-receipt` で送達し、welcome 起動 race で初回 drop しても有界リトライで再送、偽 `prompt injected` を出さない。実装/根拠は `scripts/session-comm.sh`（read-back の二段シグナル＋error/exited debounce）・`scripts/cld-spawn`（リトライ）・`ccs-ldt`/`ccs-e0i`（PR #19/#20）。なお `cld-fork` は `claude --continue --fork-session` を起動するだけ（プロンプト inject なし＝read-back 対象外）。
+  - `cld-spawn` は **`~/.cld-env` を既定で source**（解決順 `--env-file` > `CLD_ENV_FILE` > `~/.cld-env`、不在時は silent skip）＝spawn 先の認証/秘密はこの env ファイル経由。ライブ検証で隔離したい場合は明示的に `--env-file` を渡す。
 - `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）＋ `pretooluse-enforce.sh`〔hard 強制 PreToolUse(Bash) hook〕
 - `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`〔auto-compaction フェーズ名の SSOT〕, `working-memory.sh`〔2節スキーマ＋carry-forward の SSOT〕, `enforce-policy.sh`〔hard 強制の policy/マッチ/marker 導出の SSOT〕）
 - `hooks/hooks.json` — フック登録（PreToolUse:Bash / PreCompact / PostCompact / SessionStart:compact、自動検出）
@@ -64,11 +66,10 @@
 `[hard候補]`（gate-point を持ち、わずかな歪みも許せない命令）を、PreToolUse(Bash) hook が **deny-block** で強制する層。設計 SSOT は `architecture/ready-compaction-redesign.md §9.6`、フォーマット/マッチ/marker 導出の SSOT は `scripts/lib/enforce-policy.sh`。
 
 - **opt-in は policy ファイルの存在**（`$PWD/.claude-session/enforce-policy.json`）。不在/空のプロジェクトでは hook は no-op（allow）＝全プロジェクトへの波及は無害。
-- **認可（gate 定義）と unlock（許可）を分離**: `/session:enforce` が `[hard候補]`→gate を **LLM 提案 → 人間確定**で policy へ書く（authoring 専用）。実行時の unlock は人間が生シェルで `scripts/enforce-unlock <gate> "<command>"`（または block 時に提示される `touch`）を叩いて操作インスタンス marker を作る。lib は marker を作らない（読み取り専用）が、marker は空ファイルなので Claude も技術的には作成可能。本層が保証するのは「**沈黙の・偶発的な自己認可の防止**」（必ず block→人間に surface＋可監査な明示操作）であって、決然と回避する LLM を暗号学的に止めるものではない（信頼境界は人間が生シェルで叩く規律）。
+- **認可（gate 定義）と unlock（許可）を分離**: gate は `/session:enforce` が **LLM 提案 → 人間確定**で policy へ書く（authoring 専用）。実行時 unlock は人間が生シェルで `scripts/enforce-unlock <gate> "<command>"`（または block 時提示の `touch`）を叩いて操作インスタンス marker を作る＝**Claude は実行しない（hard 性の核心）**。lib は marker を作らない（読み取り専用）。保証するのは「**沈黙の・偶発的な自己認可の防止**」であって、決然と回避する LLM（env/settings.json 改変等の determined evasion）は対象外＝Position B 限界（`ccs-5p4.2` won't-fix。詳細・設計根拠は README『enforce』節と `architecture/ready-compaction-redesign.md §9.4 C-7`）。
 - **判定フロー**: policy 不在/`enforce:false`→allow ／ gate 不一致→allow ／ 有効 marker 在り→allow ／ marker 不在→block(exit 2)＋unlock 案内 ／ policy 破損・jq 不在→**fail-closed scoped**（内蔵 danger list のみ block）。
-- **marker は操作インスタンス単位**（例 `pr-merge-pr-3-sha-<head8>`）。対象や head SHA が変われば marker 名も変わり自動で再 gate（「一度で永久解除」を防ぐ）。
+- **marker は操作インスタンス単位**（例 `pr-merge-pr-3-sha-<head8>-<disamb16>`。末尾 `<disamb16>` は構造化フィールドの sha256〔16桁〕で別 gate 間の衝突を構造的に排除）。対象や head SHA が変われば marker 名も変わり自動で再 gate（「一度で永久解除」を防ぐ）。
 - **緊急 bypass は人間操作のみ**: `SESSION_ENFORCE_OFF=1` の export か policy 削除/空化。Claude は実行せず提示のみ（git ガードの代替ルート流儀）。
-- **env 経由の silent disable は Position B 限界（`ccs-5p4.2` won't-fix）**: `SESSION_ENFORCE_OFF` も `ENFORCE_POLICY_FILE` の redirect（存在しないパスへ）も settings.json env で設定でき enforce を silent 無効化しうるが、settings.json 編集は deliberate な config 改変＝determined evasion で本層の対象外（沈黙の・偶発的な自己認可を防ぐのが目的）。真に塞ぐには policy path の非 env 固定化等の別設計が要る（設計 SSOT §9.4 C-7）。
 - グローバル `git-destructive-guard.sh` と共存（両者 PreToolUse:Bash、条件が別）。
 
 | 変数 | デフォルト |
@@ -94,29 +95,14 @@
 | `h8` | sha256の先頭8文字（`worktree_path\|cwd\|prefix` のハッシュ）|
 | 全体最大長 | 50文字（超過時は `branch` を truncate、hash は末尾固定）|
 
-### Slug 仕様
-
-- 英数字・ハイフンのみ許容（`LC_ALL=C tr -c '[:alnum:]-' '-'`）
-- 連続ハイフンは1文字に圧縮、先頭・末尾のハイフンを除去
-- 空文字の場合は `x` にフォールバック
-
-### 共通ヘルパー
-
-`scripts/session-name.sh` を source して使う:
-
-```bash
-source "$(dirname "$0")/session-name.sh"
-WINDOW_NAME=$(generate_window_name wt "$CWD" "$CWD")
-```
-
-### 同一 Worktree の再利用 / TOCTOU 対策
-
-`cld-spawn` は `find_existing_window` で既存 window を確認し再利用する（`--force-new` で強制新規）。並列 spawn の重複作成は `flock`（`SESSION_LOCK_FILE`）で防止する。
+Slug ルール（英数字・ハイフンのみ／連続ハイフン圧縮／空→`x`）・共通ヘルパー `generate_window_name` の用法・既存 window 再利用（`find_existing_window`、`--force-new` で強制新規）・並列 spawn の `flock`（`SESSION_LOCK_FILE`）による TOCTOU 対策は、すべて `scripts/session-name.sh` / `scripts/cld-spawn` が SSOT。
 
 ## テスト
 
 ```bash
-bats tests/
+bats tests/                                      # 全件
+bats tests/session-comm-readback.bats            # 単一ファイル
+bats -f "error" tests/session-comm-readback.bats # 単一ケース（テスト名の部分一致）
 ```
 
-tmux に依存するテストは tmux セッション内で実行すること。
+tmux を触るテストは PATH に `tmux` stub を差し込んでモックする（実 tmux セッションは不要・全件モック）。spawn / 送達 / フック発火順序など**実環境固有挙動は bats では構造的に出ない**ため、確認はライブ e2e（隔離 state env ＋ `cld-spawn --env-file ~/.cld-env`、後始末は `tmux kill-window`）で行う。

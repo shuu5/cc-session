@@ -12,7 +12,10 @@ setup() {
     export TMUX_CALL_LOG="$SANDBOX/tmux_calls.log"
     : > "$TMUX_CALL_LOG"
 
-    # mock tmux: paste/send-keys/その他は exit 0、呼び出しを記録
+    # mock tmux: paste/send-keys/その他は exit 0、呼び出しを記録。
+    # capture-pane は呼び出し回数で baseline（1回目）と poll（2回目以降）を出し分ける
+    # （read-back の持続シグナル＝prompt 内容出現の baseline 差分を検証可能にする）。
+    export CAP_COUNTER="$SANDBOX/cap_counter"; echo 0 > "$CAP_COUNTER"
     cat > "$SANDBOX/bin/tmux" <<'TMUX_EOF'
 #!/bin/bash
 echo "$*" >> "$TMUX_CALL_LOG"
@@ -20,6 +23,10 @@ case "$1" in
     -V) echo "tmux 3.4" ;;
     has-session) exit 0 ;;
     display-message) echo "session:0" ;;
+    capture-pane)
+        c=$(cat "$CAP_COUNTER" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$CAP_COUNTER"
+        if [[ "$c" -eq 1 ]]; then printf '%s\n' "${MOCK_BASELINE:-}"; else printf '%s\n' "${MOCK_PANE:-}"; fi
+        ;;
     *) exit 0 ;;
 esac
 TMUX_EOF
@@ -101,4 +108,37 @@ teardown() {
     export MOCK_STATE=input-waiting
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 1 --no-enter
     [ "$status" -eq 0 ]
+}
+
+@test "read-back: 持続シグナル — prompt 内容が画面に出現（baseline 差分）すれば processing 無しでも受理" {
+    export MOCK_STATE=input-waiting          # processing 経路は使わない
+    export MOCK_BASELINE=""                   # baseline に sentinel 無し
+    export MOCK_PANE="> hello world prompt"   # poll で prompt 内容が出現（sentinel=hello world）
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]
+}
+
+@test "read-back: baseline に既にある内容では誤受理しない（baseline 差分が必須）" {
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE="old hello world line"   # baseline に sentinel 在り
+    export MOCK_PANE="old hello world line"        # poll でも同じ＝差分なし
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 1
+    [ "$status" -eq 4 ]                            # 差分なし＋processing なし → 未着
+}
+
+@test "read-back: processing 単発では受理しない（2 連続要求で flicker を除去）" {
+    export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
+    # 1 回目だけ processing、以降 input-waiting を返す＝単発 flicker を模す
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then
+    n=$(cat "$STATE_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STATE_COUNTER"
+    if [[ "$n" -eq 1 ]]; then echo "processing"; else echo "input-waiting"; fi
+fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]   # 単発 processing は受理されず未着
 }

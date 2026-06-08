@@ -452,7 +452,9 @@ cmd_inject_file() {
     local _rb_baseline="" _rb_sentinel=""
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
         _rb_baseline=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
-        _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-24)
+        # 空/空白のみ prompt では grep が no-match で exit 1 → set -euo pipefail 下で代入行が abort し
+        # paste 前に silent 失敗する。baseline 行と対称に `|| true` で吸収する（空 sentinel は下で無効化）。
+        _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-24 || true)
         if [[ "${#_rb_sentinel}" -lt 8 ]]; then _rb_sentinel=""; fi  # 短い先頭行は誤一致回避でスキップ
     fi
 

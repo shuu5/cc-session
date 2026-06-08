@@ -126,6 +126,23 @@ teardown() {
     [ "$status" -eq 4 ]                            # 差分なし＋processing なし → 未着
 }
 
+@test "read-back: 空白のみ prompt でも sentinel 導出で abort しない（paste まで到達・回帰）" {
+    # 空白のみ prompt: sentinel 導出 grep が no-match → 旧来は set -e で paste 前に silent abort（regression）。
+    printf '   \n\t\n' > "$PROMPT_FILE"
+    export MOCK_STATE=processing            # paste 後に受理されれば exit 0
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]                      # abort せず read-back を通過して受理
+    grep -qE 'paste-buffer' "$TMUX_CALL_LOG" # paste まで到達している（abort していない）
+}
+
+@test "read-back: 完全空 prompt でも abort しない（grep no-match の set -e 回帰）" {
+    : > "$PROMPT_FILE"                       # 0 バイト
+    export MOCK_STATE=processing
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]
+    grep -qE 'paste-buffer' "$TMUX_CALL_LOG"
+}
+
 @test "read-back: processing 単発では受理しない（2 連続要求で flicker を除去）" {
     export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
     # 1 回目だけ processing、以降 input-waiting を返す＝単発 flicker を模す

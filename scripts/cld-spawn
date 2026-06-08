@@ -201,20 +201,37 @@ if [[ -z "$PROMPT" ]]; then
     exit 0
 fi
 
-# --- inject-file --wait でプロンプトを送達（状態待機をアトミックに実行） ---
+# --- inject-file --wait + read-back でプロンプトを送達（有界リトライ・ccs-ldt） ---
 
 # プロンプトを一時ファイルに書き出し
 PROMPT_FILE=$(mktemp /tmp/cld-spawn-prompt-XXXXXX.txt)
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
-# inject-file --wait で input-waiting 待機 + 送達をアトミックに実行
-"$SCRIPT_DIR/session-comm.sh" inject-file "$WINDOW_NAME" "$PROMPT_FILE" --wait "$WAIT_TIMEOUT"
-INJECT_EXIT=$?
+# 起動時 welcome race で初回 paste が drop しても、read-back（--confirm-receipt）が未着を検出し、
+# settle 後に再送（再送時は --clear-first で部分入力をクリア）して確実に着弾させる。
+# inject-file は tmux 層成功だけでは成功扱いにしない（claude が processing へ遷移＝受理を確認）ため、
+# ここで非 0 が返るのは「真に未着」のとき。偽 "prompt injected" を出さない。
+# CONFIRM_BUDGET: read-back が「受理」を確認する 1 試行あたりの猶予秒。claude が prompt 受理後に
+# 内容を画面表示 or processing 表示するまでの時間（通常 1-3s、重い MCP 初期化で延びうる）を上回る必要がある。
+# 短すぎると正常 prompt を未着誤判定して再送（二重投入リスク）、長すぎると失敗確定が遅れる。既定 10s。
+CONFIRM_BUDGET="${CLD_CONFIRM_BUDGET:-10}"
+MAX_ATTEMPTS="${CLD_INJECT_ATTEMPTS:-3}"
+INJECT_OK=false
+for _attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+    _clear=()
+    if [[ "$_attempt" -gt 1 ]]; then _clear=(--clear-first); fi
+    if "$SCRIPT_DIR/session-comm.sh" inject-file "$WINDOW_NAME" "$PROMPT_FILE" \
+            --wait "$WAIT_TIMEOUT" --confirm-receipt "$CONFIRM_BUDGET" ${_clear[@]+"${_clear[@]}"}; then
+        INJECT_OK=true
+        break
+    fi
+    if [[ "$_attempt" -lt "$MAX_ATTEMPTS" ]]; then sleep 1; fi
+done
 
 rm -f "$PROMPT_FILE"
 
-if [[ $INJECT_EXIT -ne 0 ]]; then
-    echo "Error: プロンプトの送達に失敗しました（${WAIT_TIMEOUT}秒でタイムアウト or 送信エラー）" >&2
+if ! $INJECT_OK; then
+    echo "Error: プロンプトの送達に失敗しました（${MAX_ATTEMPTS}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2
     exit 1
 fi
 

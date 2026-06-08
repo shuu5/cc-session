@@ -5,7 +5,7 @@
 # Usage:
 #   session-comm.sh capture <window> [--lines N] [--raw]
 #   session-comm.sh inject <window> <text> [--force] [--no-enter]
-#   session-comm.sh inject-file <window> <file> [--force] [--no-enter] [--wait SECONDS]
+#   session-comm.sh inject-file <window> <file> [--force] [--no-enter] [--wait SECONDS] [--confirm-receipt SECONDS] [--clear-first]
 #   session-comm.sh wait-ready <window> [--timeout N]
 #
 # Dependencies: session-state.sh (#277)
@@ -55,7 +55,7 @@ usage() {
 Usage:
   session-comm.sh capture <window> [--lines N] [--all] [--raw]
   session-comm.sh inject <window> <text> [--force] [--no-enter]
-  session-comm.sh inject-file <window> <file> [--force] [--no-enter] [--wait SECONDS]
+  session-comm.sh inject-file <window> <file> [--force] [--no-enter] [--wait SECONDS] [--confirm-receipt SECONDS] [--clear-first]
   session-comm.sh wait-ready <window> [--timeout SECONDS]
 
 Subcommands:
@@ -63,7 +63,11 @@ Subcommands:
                --all   Capture full scrollback (mutually exclusive with --lines)
   inject       Send single-line text to a window (state-checked)
   inject-file  Send file content to a window via tmux load-buffer (multi-line safe)
-               --wait SECONDS  Wait for input-waiting state before injecting
+               --wait SECONDS             Wait for input-waiting state before injecting
+               --confirm-receipt SECONDS  After Enter, confirm claude accepted the prompt
+                                          (prompt content appears OR processing observed);
+                                          exit 4 if not confirmed within SECONDS (ccs-ldt)
+               --clear-first              Send C-u before paste to clear stale input (for re-send)
   wait-ready   Wait until window is input-waiting
 EOF
     exit 1
@@ -350,7 +354,9 @@ cmd_inject_file() {
     local file_path=""
     local force=false
     local no_enter=false
-    local wait_timeout=0  # 0 = 待機なし（単発チェック）
+    local wait_timeout=0       # 0 = 待機なし（単発チェック）
+    local confirm_receipt=0    # 0 = 送達 read-back なし（後方互換・既定）。>0 で paste 後に受理を確認（ccs-ldt）
+    local clear_first=false    # true で paste 前に C-u 送出（再送時の部分入力クリア・重複防止）
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -369,6 +375,18 @@ cmd_inject_file() {
                     exit 1
                 fi
                 shift 2
+                ;;
+            --confirm-receipt)
+                confirm_receipt="${2:-8}"
+                if ! [[ "$confirm_receipt" =~ ^[1-9][0-9]*$ ]]; then
+                    echo "Error: --confirm-receipt requires a positive integer" >&2
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --clear-first)
+                clear_first=true
+                shift
                 ;;
             -*)
                 echo "Error: unknown option '$1'" >&2
@@ -427,6 +445,25 @@ cmd_inject_file() {
         fi
     fi
 
+    # read-back（--confirm-receipt 時）用の baseline と sentinel を paste 前に準備（ccs-ldt）。
+    # baseline = paste 前の画面。sentinel = prompt 先頭非空行の先頭 24 字（pane 折返しに耐えるよう短め）。
+    # 「sentinel が paste 後に出現し baseline には無い」を持続シグナルとして使い、processing が一瞬で
+    # 終わる fast-complete でも受理を取りこぼさない（false-negative→cld-spawn 再送による二重投入の防止）。
+    local _rb_baseline="" _rb_sentinel=""
+    if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
+        _rb_baseline=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+        # 空/空白のみ prompt では grep が no-match で exit 1 → set -euo pipefail 下で代入行が abort し
+        # paste 前に silent 失敗する。baseline 行と対称に `|| true` で吸収する（空 sentinel は下で無効化）。
+        _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-24 || true)
+        if [[ "${#_rb_sentinel}" -lt 8 ]]; then _rb_sentinel=""; fi  # 短い先頭行は誤一致回避でスキップ
+    fi
+
+    # --clear-first: 再送時に入力欄へ残る部分 paste を C-u でクリアし、再 paste の重複を防ぐ（ccs-ldt）。
+    # 入力欄が空なら C-u は no-op。初回送達では通常不要（cld-spawn は再送時のみ付与）。
+    if $clear_first; then
+        tmux send-keys -t "$target" C-u 2>/dev/null || true
+    fi
+
     # tmux load-buffer + paste-buffer で改行を含むテキストを安全に送達
     # 前提: tmux >= 2.0 (delete-buffer -b は tmux 2.0+ で追加)
     # named buffer でバッファ衝突を防止 (#1050)
@@ -476,6 +513,46 @@ cmd_inject_file() {
         # 完了する前に Enter が到着するタイミング問題を回避。#234）
         sleep 0.3
         session_msg send "$target" "" --enter-only
+    fi
+
+    # 送達 read-back（ccs-ldt）: --confirm-receipt 指定かつ Enter 送出時のみ。
+    # paste 成功（tmux 層）だけでは「claude が prompt を受理した」ことを意味しない（起動時 welcome は
+    # bracketed paste を drop しうる）。受理を 2 つのシグナルで確認し、どちらも取れなければ非 0(=4) で返す:
+    #   (1) 持続: 我々の prompt 内容（sentinel）が画面に出現し baseline には無い＝確実に受理。fast-complete
+    #            でも会話履歴に残るため取りこぼさない（false-negative→cld-spawn 再送による二重投入を防ぐ）。
+    #   (2) 遷移: state==processing を 2 連続観測＝claude 実行中。detect_state の既定 fallthrough も
+    #            processing のため、welcome 遷移の単発 flicker による false-accept を「2 連続要求」で除去する。
+    # error/exited は未着扱い。budget 失効も未着（exit 4）。呼び出し側（cld-spawn）は非 0 を受けて再送する。
+    # 既知の限界: sentinel が pane で折返し/スクロール退避し、かつ processing を 2 連続で観測できないほど
+    # 高速完了する prompt（spawn の実タスクでは非現実的）では false-negative→再送で二重投入の余地が残る。
+    if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
+        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0
+        _rb_deadline=$(( $(date +%s) + confirm_receipt ))
+        while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
+            # (1) 持続シグナル: prompt 内容が画面に出現（baseline 差分）
+            if [[ -n "$_rb_sentinel" ]]; then
+                _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+                if printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel" \
+                   && ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sentinel"; then
+                    _rb_ok=true; break
+                fi
+            fi
+            # (2) 遷移シグナル: processing の 2 連続観測（単発 flicker を除去）
+            _rb_state=$("${_state_script_dir}/session-state.sh" state "$window_name" 2>/dev/null) || _rb_state="unknown"
+            case "$_rb_state" in
+                processing)
+                    _rb_streak=$(( _rb_streak + 1 ))
+                    if [[ "$_rb_streak" -ge 2 ]]; then _rb_ok=true; break; fi
+                    ;;
+                error|exited) break ;;                # 異常終了は未着扱い（fail）
+                *)            _rb_streak=0 ;;          # input-waiting/idle/unknown は streak リセット
+            esac
+            sleep 0.3
+        done
+        if ! $_rb_ok; then
+            echo "Error: prompt not confirmed received by '$window_name' (state=${_rb_state:-unknown} after ${confirm_receipt}s)" >&2
+            exit 4
+        fi
     fi
 }
 

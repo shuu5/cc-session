@@ -522,11 +522,12 @@ cmd_inject_file() {
     #            でも会話履歴に残るため取りこぼさない（false-negative→cld-spawn 再送による二重投入を防ぐ）。
     #   (2) 遷移: state==processing を 2 連続観測＝claude 実行中。detect_state の既定 fallthrough も
     #            processing のため、welcome 遷移の単発 flicker による false-accept を「2 連続要求」で除去する。
-    # error/exited は未着扱い。budget 失効も未着（exit 4）。呼び出し側（cld-spawn）は非 0 を受けて再送する。
+    # error/exited は 2 連続観測で未着確定（単発の transient 誤判定は無視＝processing と対称）。
+    # budget 失効も未着（exit 4）。呼び出し側（cld-spawn）は非 0 を受けて再送する。
     # 既知の限界: sentinel が pane で折返し/スクロール退避し、かつ processing を 2 連続で観測できないほど
     # 高速完了する prompt（spawn の実タスクでは非現実的）では false-negative→再送で二重投入の余地が残る。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0
+        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0 _rb_err_streak=0
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             # (1) 持続シグナル: prompt 内容が画面に出現（baseline 差分）
@@ -537,15 +538,22 @@ cmd_inject_file() {
                     _rb_ok=true; break
                 fi
             fi
-            # (2) 遷移シグナル: processing の 2 連続観測（単発 flicker を除去）
+            # (2) 遷移シグナル: processing/error をどちらも 2 連続観測で確定（単発 flicker を除去）。
+            #     detect_state は screen-scraping ヒューリスティックで単発の誤判定がありうるため、
+            #     processing（受理）も error/exited（未着）も「2 連続」を要求して対称化する（ccs-e0i item3）。
+            #     これにより transient な error 誤判定での premature break→再送（二重投入）を防ぐ。
+            #     非連続の振動（error→processing→error 等）はどちらの streak も 2 に達さず budget 失効へ。
             _rb_state=$("${_state_script_dir}/session-state.sh" state "$window_name" 2>/dev/null) || _rb_state="unknown"
             case "$_rb_state" in
                 processing)
-                    _rb_streak=$(( _rb_streak + 1 ))
+                    _rb_streak=$(( _rb_streak + 1 )); _rb_err_streak=0
                     if [[ "$_rb_streak" -ge 2 ]]; then _rb_ok=true; break; fi
                     ;;
-                error|exited) break ;;                # 異常終了は未着扱い（fail）
-                *)            _rb_streak=0 ;;          # input-waiting/idle/unknown は streak リセット
+                error|exited)
+                    _rb_err_streak=$(( _rb_err_streak + 1 )); _rb_streak=0
+                    if [[ "$_rb_err_streak" -ge 2 ]]; then break; fi   # 2 連続で異常終了確定＝未着（fail）
+                    ;;
+                *)            _rb_streak=0; _rb_err_streak=0 ;;  # input-waiting/idle/unknown は両 streak リセット
             esac
             sleep 0.3
         done

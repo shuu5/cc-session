@@ -66,13 +66,13 @@ teardown() {
     [[ "$output" == *"not confirmed received"* ]]
 }
 
-@test "read-back: state=error は即 fail（exit 4）" {
+@test "read-back: state=error は 2 連続で fail（持続 error＝exit 4）" {
     export MOCK_STATE=error
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 4 ]
 }
 
-@test "read-back: state=exited も fail（exit 4）" {
+@test "read-back: state=exited も 2 連続で fail（持続 exited＝exit 4）" {
     export MOCK_STATE=exited
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 4 ]
@@ -158,4 +158,59 @@ STATE_EOF
     chmod +x "$SANDBOX/mock_scripts/session-state.sh"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
     [ "$status" -eq 4 ]   # 単発 processing は受理されず未着
+}
+
+@test "read-back: 単発 error は即 break せず、後続 processing 2連続で受理＝exit 0（ccs-e0i item3）" {
+    # detect_state の transient な error 誤判定を模す: poll1=error（誤判定）, poll2 以降=processing。
+    # 旧実装は poll1 で即 break→exit 4（premature break→再送＝二重投入リスク）。
+    # debounce 対称化後は error 1 回では break せず、後続 processing 2連続で受理する。
+    export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
+    export MOCK_BASELINE="noise"; export MOCK_PANE="noise"   # sentinel 経路は無効化（state 経路のみ検証）
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then
+    n=$(cat "$STATE_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STATE_COUNTER"
+    if [[ "$n" -eq 1 ]]; then echo "error"; else echo "processing"; fi
+fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 5
+    [ "$status" -eq 0 ]
+}
+
+@test "read-back: 単発 exited も即 break せず、後続 processing 2連続で受理＝exit 0（ccs-e0i item3）" {
+    export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
+    export MOCK_BASELINE="noise"; export MOCK_PANE="noise"
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then
+    n=$(cat "$STATE_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STATE_COUNTER"
+    if [[ "$n" -eq 1 ]]; then echo "exited"; else echo "processing"; fi
+fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 5
+    [ "$status" -eq 0 ]
+}
+
+@test "read-back: error→processing→error の非連続では確定せず budget 失効で未着＝exit 4（streak リセット）" {
+    # 非連続の error/processing 振動は確定シグナルにならない。sentinel も無いため budget 失効で exit 4。
+    export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
+    export MOCK_BASELINE="noise"; export MOCK_PANE="noise"
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then
+    n=$(cat "$STATE_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STATE_COUNTER"
+    case $(( n % 2 )) in 1) echo "error" ;; 0) echo "processing" ;; esac
+fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 1
+    [ "$status" -eq 4 ]
 }

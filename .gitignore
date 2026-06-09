@@ -10,3 +10,4 @@
 # Beads: Dolt が SSOT。生成 jsonl は追跡しない
 .beads/issues.jsonl
 .beads/interactions.jsonl
+.worktrees/

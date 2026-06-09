@@ -77,7 +77,9 @@ description: |
 
    2. **ブランチ名・worktree パス生成**:
       ```bash
-      BRANCH_NAME="spawn/$(date +%H%M%S)"
+      # -$$ で同一秒の並列 spawn でも distinct（cld-spawn / cld-fork の命名規約に一致）。
+      # これが無いと秒解像度ゆえ同一秒の 2 spawn が同名ブランチ → git worktree add -b が衝突。
+      BRANCH_NAME="spawn/$(date +%H%M%S)-$$"
       WORKTREE_DIR="$PROJECT_DIR/.worktrees/$BRANCH_NAME"
       ```
 
@@ -95,7 +97,8 @@ description: |
 
    4. **ウィンドウ名決定**:
       - プロンプトに Issue 番号（`#123`）が含まれる → `wt-123`
-      - それ以外 → `wt-HHMMSS`（ブランチ名のタイムスタンプ部分）
+      - それ以外 → `wt-HHMMSS-$$`（ブランチ名の一意サフィックス込み）
+      - **並列 spawn 時**: `session-comm.sh` / `session-state.sh` は **window 名で送達・状態取得**するため、各 worker に **distinct な window 名**を与える（issue ベース `wt-<id>` 推奨。無名フォールバックも `-$$` で衝突回避）。
 
    5. **cld-spawn 実行**:
       `--worktree` を除いた残りのテキストを PROMPT として使用。

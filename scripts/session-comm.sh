@@ -69,6 +69,12 @@ Subcommands:
                                           exit 4 if not confirmed within SECONDS (ccs-ldt)
                --clear-first              Send C-u before paste to clear stale input (for re-send)
   wait-ready   Wait until window is input-waiting
+
+Environment:
+  SESSION_COMM_SUBMIT_ENTER_MAX  paste 後に未 submit（input-waiting 滞留）なら撃つ追い Enter の上限
+                                 （既定 3, 0=無効）。複数行 paste が [Pasted text +M lines] に
+                                 折りたたまれ既定 Enter が吸収される事象の救済（un-iur）。承認/質問
+                                 ダイアログ可視時は modality ガードで送らない。非負整数のみ。
 EOF
     exit 1
 }
@@ -419,6 +425,44 @@ cmd_inject_file() {
         exit 1
     fi
 
+    # 追い Enter（un-iur）の上限。paste 前に検証する＝fail-closed（兄弟の --confirm-receipt/--wait と対称）。
+    # paste 後の算術文脈で初めて評価すると、malformed 値（例 'abc'）が set -u 下で `unbound variable` を
+    # 投げて『paste 済み・初回 Enter 送出済み』の状態で abort し、confirm_receipt==0 経路（read-back 無し）の
+    # 呼び出し側に『送達済みか未送達か』を判別不能にする fail-confusing パスになる。ここで弾けばその窓を閉じる。
+    # 受理: 非負整数のみ。0 は『追い Enter を意図的に無効化』として許す（=複数行 paste 折りたたみ時に
+    # Enter 吸収が起きても submit は初回 Enter 任せ＝未送信のまま返りうる）。負値は un-iur を無音で殺すため拒否。
+    local _se_max="${SESSION_COMM_SUBMIT_ENTER_MAX:-3}"
+    if ! [[ "$_se_max" =~ ^[0-9]+$ ]]; then
+        echo "Error: SESSION_COMM_SUBMIT_ENTER_MAX requires a non-negative integer (got '$_se_max')" >&2
+        exit 1
+    fi
+
+    # modality ガードの dialog 判別 regex を session-state.sh の INPUT_WAITING_PATTERNS（SSOT）から導出する。
+    # 手書き複製は drift で fail-open（新 dialog 文言が片側だけに追加されると detect_state は input-waiting と
+    # 分類するのに regex は一致せず、real dialog へ空 Enter を撃って既定選択/空回答を勝手に確定する）。配列を
+    # 直接 source して単一 SSOT 化することで構造的に防ぐ。confirm_receipt==0 の追い Enter ループと
+    # confirm_receipt>0 の read-back 救済 Enter の両方で共有する（両経路に同一の modality ガードを効かせる）。
+    #   - source 元は実スクリプトディレクトリ（$SCRIPT_DIR）固定: state 呼び出しは mock 差し替え可能な
+    #     $_state_script_dir 経由だが、パターン配列は real SSOT を使う（テストの state mock は
+    #     INPUT_WAITING_PATTERNS を定義しないため $_state_script_dir から source すると空になる）。
+    #   - subshell で source する: session-state.sh は usage()/resolve_target() を定義し session-comm.sh の
+    #     同名関数を clobber しうる（現状は実装一致だが drift で挙動が変わる latent footgun）。subshell に
+    #     隔離して配列だけを stdout で取り出すことで、関数/変数の漏洩を構造的に排除する。
+    #     BASH_SOURCE ガードで dispatch はしない＝副作用は subshell 内の定義のみ。
+    #   - PROMPT_PATTERN（❯ の素の入力欄）は INPUT_WAITING_PATTERNS の要素ではない＝自動的に除外され、
+    #     『未 submit の滞留＝追い Enter で submit すべき正当ケース』は抑止されない。
+    #   - source 失敗/空配列時は既知良好なリテラルへ fail-closed（modality ガードを silently 消さない）。
+    local _se_dialog_re=''
+    _se_dialog_re=$(
+        source "${SCRIPT_DIR}/session-state.sh" 2>/dev/null || exit 0
+        [[ -n "${INPUT_WAITING_PATTERNS+x}" ]] && [[ "${#INPUT_WAITING_PATTERNS[@]}" -gt 0 ]] || exit 0
+        IFS='|'; printf '%s' "${INPUT_WAITING_PATTERNS[*]}"
+    ) || _se_dialog_re=''
+    if [[ -z "$_se_dialog_re" ]]; then
+        # fail-closed: SSOT source に失敗しても modality ガードを無効化しない（既知良好な複製を使う）。
+        _se_dialog_re='Enter to select|↑/↓ to navigate|承認しますか|確認しますか|Do you want to|\[y/N\]|\[Y/n\]|Type something|Waiting for user input'
+    fi
+
     local target
     target=$(resolve_target "$window_name") || exit 1
 
@@ -513,6 +557,65 @@ cmd_inject_file() {
         # 完了する前に Enter が到着するタイミング問題を回避。#234）
         sleep 0.3
         session_msg send "$target" "" --enter-only
+
+        # 追い Enter（un-iur）: 複数行 paste を Claude Code TUI が [Pasted text #N +M lines] に
+        # 折りたたむ際、上で送った既定 Enter が paste 折りたたみ処理に吸収され未送信のまま入力欄に
+        # 滞留することがある（25 行 paste で観測）。submit 済みなら state は input-waiting を抜ける
+        # （processing/idle/error/exited）ので、抜けていなければ未 submit と判断して追い Enter を有界回数送る。
+        #
+        # 適用範囲は --confirm-receipt 非指定の経路のみ（confirm_receipt == 0）に限定する。理由:
+        #   (c) --confirm-receipt 経路は下の read-back が input-waiting 滞留（未着）を exit 4 で検知し、
+        #       cld-spawn が --clear-first でフル再 paste リトライして着弾させる既存機構を持つ。そこへ
+        #       追い Enter を差し込むと read-back が見る state 系列がずれ（counter ベース mock を desync）、
+        #       かつ二重 submit のリスクを生むため、read-back 経路の挙動は一切変えない（回帰なし）。
+        # 二重 submit 防止: state が input-waiting でない（=submit 済み）と分かった時点で即停止する。
+        #   submit 後すぐ processing へ遷移する cld-spawn 正常経路では初回 poll で抜けて追い Enter 0 回。
+        #   空 Enter は Claude Code TUI の入力欄に対しては no-op のため、万一 submit 済みでも無害。
+        #
+        # modality ガード（重要）: 『空 Enter は no-op』は素の入力欄に対してのみ真。承認 UI / AskUserQuestion
+        # （選択 UI も フリーテキスト 'Type something' も）/ y/N 等のダイアログでの Enter は no-op ではなく
+        # 『既定選択の確定』『空入力の確定』という実アクションになる。detect_state はこれらも input-waiting と
+        # 分類するため、paste した prompt が初回 Enter で正常 submit された直後にダイアログが出た（=正当な
+        # post-submit input-waiting）ケースでは、state だけでは『未 submit』と誤認し追い Enter がダイアログを
+        # 勝手に確定しうる。これを防ぐため、pane に detect_state の input-waiting 系パターン（❯ の素の入力欄を
+        # 除く）が見えている間は追い Enter を抑止する（state==input-waiting でも送らない）。
+        # 区別: 素の入力欄（❯）に滞留 = 未 submit なので追い Enter で submit。ダイアログ = 実アクションなので skip。
+        # （注: 'bypass permissions' は --dangerously-skip-permissions の常時ステータスバーでありダイアログ
+        #  識別子ではないため、抑止マーカーに含めない。下の _se_dialog_re 参照。）
+        if [[ "$confirm_receipt" -eq 0 ]]; then
+            # 承認 / AskUserQuestion / 選択 UI / y/N / フリーテキスト入力など『Enter が実アクションになる』
+            # ダイアログのマーカー（pane 直読みで判定）。detect_state が input-waiting に分類するパターン
+            # （session-state.sh:INPUT_WAITING_PATTERNS）のうち、素の入力欄を示す ❯（PROMPT_PATTERN・配列外）
+            # だけは『未 submit の滞留＝追い Enter で submit すべき正当ケース』なので作用させず、それ以外
+            # （承認系＋フリーテキスト 'Type something'／generic 'Waiting for user input'）は全て『Enter が
+            # 実アクション』として抑止する。漏れがあると post-submit ダイアログへ空 Enter を撃って既定選択や
+            # 空入力を確定させる fail-open になるため、下では INPUT_WAITING_PATTERNS を直接 source して
+            # _se_dialog_re を導出し、手書き複製による drift を構造的に排除する。
+            #
+            # 重要: 'bypass permissions' は含めない。cld は `claude --dangerously-skip-permissions` で起動し、
+            # この mode では `⏵⏵ bypass permissions on (shift+tab to cycle)` がステータスバーに常時表示される
+            # （ダイアログ識別子ではない）。これを抑止マーカーにすると、修正が狙う『素の入力欄に滞留した
+            # 未 submit』状態の実 pane でも毎ループ break し、追い Enter が 0 回＝実機で no-op になる。
+            local _se_i=0 _se_state _se_pane
+            # _se_dialog_re は cmd_inject_file 冒頭で INPUT_WAITING_PATTERNS（SSOT）から導出済み（共有）。
+            while [[ "$_se_i" -lt "$_se_max" ]]; do
+                _se_state=$("${_state_script_dir}/session-state.sh" state "$window_name" 2>/dev/null) || _se_state="unknown"
+                # input-waiting 以外（processing/idle/error/exited/unknown）に抜けていれば submit 済み＝停止。
+                # unknown は state 取得失敗時の安全側（追い Enter で二重 submit するより、no-op 前提で停止）。
+                [[ "$_se_state" != "input-waiting" ]] && break
+                # modality ガード: 承認/質問ダイアログが見えていれば、これは未 submit ではなく正当な
+                # post-submit input-waiting。追い Enter は既定選択を確定する実アクションになるため送らず停止。
+                _se_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+                if printf '%s' "$_se_pane" | grep -qE -- "$_se_dialog_re"; then
+                    break
+                fi
+                # 依然 input-waiting かつダイアログ無し＝paste 折りたたみで Enter が吸収され未 submit。
+                # 素の入力欄への空 Enter は no-op のため安全に追い Enter で submit する。
+                session_msg send "$target" "" --enter-only
+                sleep 0.3
+                ((_se_i++)) || true
+            done
+        fi
     fi
 
     # 送達 read-back（ccs-ldt）: --confirm-receipt 指定かつ Enter 送出時のみ。
@@ -524,10 +627,22 @@ cmd_inject_file() {
     #            processing のため、welcome 遷移の単発 flicker による false-accept を「2 連続要求」で除去する。
     # error/exited は 2 連続観測で未着確定（単発の transient 誤判定は無視＝processing と対称）。
     # budget 失効も未着（exit 4）。呼び出し側（cld-spawn）は非 0 を受けて再送する。
+    # 複数行 paste 折りたたみ吸収の救済（un-iur, read-back 経路）: cld-spawn の初期 inject は常に
+    # --confirm-receipt 経由（confirm_receipt>0）なので、上の confirm_receipt==0 限定の追い Enter ループは
+    # 効かない。決定論的な折りたたみ吸収（25 行 paste で初回 Enter が常に吸収・再 paste でも吸収）の場合、
+    # read-back は毎回 input-waiting を見て exit 4 → cld-spawn が同一『paste＋単発 Enter』を再送するだけで
+    # 各リトライも同じく吸収され、MAX_ATTEMPTS 後に送達失敗（exit 1）に陥りうる。これを塞ぐため、read-back
+    # ループ内で input-waiting（=未 submit の滞留）を観測したら、上の追い Enter と同一の modality ガード下で
+    # 有界（_se_max）の救済 Enter を撃って吸収された submit を flush する。
+    #   - desync 回避: input-waiting は従来どおり両 streak をリセットする（processing/error の連続判定ロジックは
+    #     一切変えない＝counter ベース mock を desync させない）。救済 Enter は受理判定に介入しない。
+    #   - 二重 submit 回避: sentinel が見えれば(1)で、processing 2 連続なら(2)で先に break＝救済 Enter は
+    #     『sentinel 不可視（折りたたみ）かつ input-waiting かつ dialog 不可視』のときのみ撃つ。dialog 可視時は
+    #     modality ガードで撃たない（post-submit ダイアログの既定確定を防ぐ）。空 Enter は素入力欄では no-op。
     # 既知の限界: sentinel が pane で折返し/スクロール退避し、かつ processing を 2 連続で観測できないほど
     # 高速完了する prompt（spawn の実タスクでは非現実的）では false-negative→再送で二重投入の余地が残る。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0 _rb_err_streak=0
+        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0 _rb_err_streak=0 _rb_resub=0
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             # (1) 持続シグナル: prompt 内容が画面に出現（baseline 差分）
@@ -553,7 +668,18 @@ cmd_inject_file() {
                     _rb_err_streak=$(( _rb_err_streak + 1 )); _rb_streak=0
                     if [[ "$_rb_err_streak" -ge 2 ]]; then break; fi   # 2 連続で異常終了確定＝未着（fail）
                     ;;
-                *)            _rb_streak=0; _rb_err_streak=0 ;;  # input-waiting/idle/unknown は両 streak リセット
+                input-waiting)
+                    _rb_streak=0; _rb_err_streak=0  # 受理判定ロジックは不変（desync 防止）
+                    # 折りたたみ吸収の救済: 未 submit の滞留に有界の救済 Enter を撃つ（dialog 可視時は撃たない）。
+                    if [[ "$_rb_resub" -lt "$_se_max" ]]; then
+                        _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+                        if ! printf '%s' "$_rb_pane" | grep -qE -- "$_se_dialog_re"; then
+                            session_msg send "$target" "" --enter-only
+                            ((_rb_resub++)) || true
+                        fi
+                    fi
+                    ;;
+                *)            _rb_streak=0; _rb_err_streak=0 ;;  # idle/unknown は両 streak リセット
             esac
             sleep 0.3
         done

@@ -39,11 +39,13 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 
 - **恒久命令**（このリポで常に真）→ **プロジェクト CLAUDE.md(git)** へ昇格提案（提案のみ。グローバル CLAUDE.md は対象外）
 - **横断/インシデントの事実・教訓** → doobidoo MCP に保存
-- **effort 命令・作業状態**（この作業の間だけ）→ `.claude-session/working-memory.md` に 2 節スキーマで退避し、次サイクルへ **carry-forward**（コア）
+- **effort 命令・作業状態**（この作業の間だけ）→ `.claude-session/working-memory.<sid>.md`（session-scoped）に 2 節スキーマで退避し、次サイクルへ **carry-forward**（コア）
 - **discrete・永続タスク**（セッション/effort を越えて残す作業）→ **beads（`bd create`）で issue 化**を誘導。Working Memory「計画弧」は bd issue ID 参照に留め内容を重複させない（bd 未導入リポは Working Memory にフォールバック）
 - **hard 候補**（gate を持ち歪みを許せない命令）→ working-file に `[hard候補]` でマーク → `/session:enforce` で gate 昇格（実強制は PreToolUse hook）
 
 付随する PreCompact / PostCompact / SessionStart(compact) フック（`hooks/hooks.json`）が圧縮の前後で退避・復元と命令の carry-forward を自動化する。これらは **opt-in**: `.claude-session/.compaction-enabled` マーカーがあるプロジェクトでのみ発火する（スキル初回実行時に自動作成、他プロジェクトでは no-op）。
+
+退避ファイルは **session-scoped**（`working-memory.<sid>.md`）。cwd=anchor の複数セッションが同一ファイルを奪い合う衝突（2026-06-09 実害）を構造的に根絶するため、ファイル名に session id を含める。session id は hook stdin の `.session_id`（一次）→ `CLAUDE_CODE_SESSION_ID` env（二次フォールバック）で解決し、解決不能なら legacy 非 scoped 名（`working-memory.md`・後方互換）へ落ちる。opt-in マーカーと log はプロジェクト共有なので session-scoped にしない。設計判断（自動移行はせず coexistence・consumed 連鎖も同一セッション内に閉じる）は `architecture/compaction-memory-model.md`。
 
 2 節スキーマ・carry-forward の実体は `scripts/lib/working-memory.sh`。設計詳細は `architecture/compaction-memory-model.md`（2 軸 × carrier モデルの SSOT）、フェーズ別の決定根拠は `architecture/ready-compaction-redesign.md` を参照。
 

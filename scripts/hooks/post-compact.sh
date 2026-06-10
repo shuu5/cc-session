@@ -8,6 +8,15 @@
 # 設計方針: `set -e` を使わず IO は握り潰す。マーカー不在なら no-op。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# session id を stdin の hook JSON から一次解決し、session-env.sh の scoped パス解決へ流す
+# （session-env.sh を source する「前」。env 継承は session-env.sh 内の二次フォールバックが拾う）。
+# shellcheck source=../lib/hook-session-id.sh
+source "$SCRIPT_DIR/../lib/hook-session-id.sh" 2>/dev/null || true
+if declare -f hook_extract_session_id >/dev/null 2>&1; then
+    _sid="$(hook_extract_session_id)"
+    [ -n "$_sid" ] && export WM_SESSION_ID="$_sid"
+    unset _sid
+fi
 # shellcheck source=../lib/session-env.sh
 source "$SCRIPT_DIR/../lib/session-env.sh" 2>/dev/null || exit 0
 

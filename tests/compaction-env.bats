@@ -7,6 +7,9 @@ SESSION_ENV_SH="$SCRIPT_DIR/lib/session-env.sh"
 
 setup() {
     SANDBOX="$(mktemp -d)"
+    # ambient な実セッション id を排除し legacy 非 scoped パスで決定論化（session-scoped は
+    # working-memory-session-scoped.bats が固定。これらは legacy 経路の回帰ガード）。
+    unset CLAUDE_CODE_SESSION_ID WM_SESSION_ID WORKING_MEMORY_SESSION_ID
 }
 
 teardown() {

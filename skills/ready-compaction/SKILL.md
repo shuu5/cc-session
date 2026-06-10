@@ -125,6 +125,6 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 
 - 退避先は既定で作業ディレクトリ直下 `$WORKING_MEMORY_DIR`（`.claude-session/`、環境変数で上書き可）
 - compaction フックは opt-in マーカーがあるプロジェクトでのみ動作する
-- PostCompact が復元すると Working Memory は `working-memory.consumed.md` へ mv される（削除しない）。
-  この consumed が次サイクルの **carry-forward の供給源**になる（命令・制約節を機械引き継ぎ）
+- PostCompact が復元すると Working Memory は `$WORKING_MEMORY_CONSUMED_FILE`（session-scoped: `working-memory.<sid>.consumed.md`）へ mv される（削除しない）。
+  この consumed が次サイクルの **carry-forward の供給源**になる（命令・制約節を機械引き継ぎ）。退避ファイルは session id を含むため cwd=anchor の複数セッションでも互いに上書きしない（`un-gcu`）
 - 2節スキーマ・タグ書式・carry-forward の実体は `scripts/lib/working-memory.sh`（SSOT）

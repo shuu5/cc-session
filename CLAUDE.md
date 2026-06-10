@@ -47,10 +47,12 @@
 | 変数 | デフォルト |
 |---|---|
 | `WORKING_MEMORY_DIR` | `$PWD/.claude-session` |
-| `WORKING_MEMORY_FILE` | `$WORKING_MEMORY_DIR/working-memory.md` |
-| `WORKING_MEMORY_CONSUMED_FILE` | `$WORKING_MEMORY_DIR/working-memory.consumed.md` |
-| `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled`（フック発火の opt-in マーカー）|
-| `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt` |
+| `WORKING_MEMORY_FILE` | `$WORKING_MEMORY_DIR/working-memory.<sid>.md`（session id 非解決時は legacy `working-memory.md`）|
+| `WORKING_MEMORY_CONSUMED_FILE` | `$WORKING_MEMORY_DIR/working-memory.<sid>.consumed.md`（非解決時は legacy `working-memory.consumed.md`）|
+| `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled`（フック発火の opt-in マーカー。**session-scoped でない**）|
+| `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt`（**session-scoped でない**）|
+
+退避ファイルは **session-scoped**（`un-gcu`）。cwd=anchor の複数セッションが同一退避ファイルを奪い合う衝突（2026-06-09 実害）を構造的に根絶するため、ファイル名に session id を含める。session id の解決順は `WM_SESSION_ID`（hook が stdin の `.session_id` から設定）> `CLAUDE_CODE_SESSION_ID`（bash tool / hook 継承 env・二次フォールバック）> 空（→ legacy 非 scoped 名で後方互換）。slug は `[A-Za-z0-9-]` のみ・64 文字上限（path traversal を構造排除）。stdin 抽出は `scripts/lib/hook-session-id.sh`、解決とパス導出は `scripts/lib/session-env.sh` が SSOT。設計判断（自動移行はせず coexistence・consumed 連鎖は同一セッション内に閉じる）は `architecture/compaction-memory-model.md`。
 
 ## ready-compaction の責務（policy router 兼 effort carrier）
 

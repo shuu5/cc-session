@@ -8,6 +8,15 @@
 # 設計方針: `set -e` を使わず IO は握り潰す。マーカー不在なら no-op。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# session id を stdin の hook JSON から一次解決し、session-env.sh の scoped パス解決へ流す
+# （session-env.sh を source する「前」。env 継承は session-env.sh 内の二次フォールバックが拾う）。
+# shellcheck source=../lib/hook-session-id.sh
+source "$SCRIPT_DIR/../lib/hook-session-id.sh" 2>/dev/null || true
+if declare -f hook_extract_session_id >/dev/null 2>&1; then
+    _sid="$(hook_extract_session_id)"
+    [ -n "$_sid" ] && export WM_SESSION_ID="$_sid"
+    unset _sid
+fi
 # shellcheck source=../lib/session-env.sh
 source "$SCRIPT_DIR/../lib/session-env.sh" 2>/dev/null || exit 0
 
@@ -50,6 +59,9 @@ fi
 # 外部化ファイル一覧（存在のみ通知、内容は読まない）。consumed 済みは除外。
 # さらに consumed が在るなら working-memory.md は復元済みサイクルの未 rename 重複とみなし除外する
 # （SessionStart が PostCompact の mv より先に走り working がまだ rename されていない場合の二重 Read 誘導を防ぐ）。
+# session-scoped（WORKING_MEMORY_SESSION_ID 非空）では他セッションの working-memory.<other>.md を
+# 一覧へ出さない（cross-session mis-restore の構造的根絶。un-gcu）。legacy（session id 空）経路は
+# 従来どおり全 *.md を列挙する（後方互換）。
 if [ -d "$WORKING_MEMORY_DIR" ]; then
     _wm_base="$(basename "$WORKING_MEMORY_FILE")"
     shopt -s nullglob
@@ -59,7 +71,9 @@ if [ -d "$WORKING_MEMORY_DIR" ]; then
         case "$_b" in
             *.consumed.md) ;;  # 復元済み → 一覧から除外
             *)
-                if [ "$_b" = "$_wm_base" ] && [ -f "$WORKING_MEMORY_CONSUMED_FILE" ]; then
+                if [ -n "${WORKING_MEMORY_SESSION_ID:-}" ] && [ "$_b" != "$_wm_base" ]; then
+                    : # scoped 文脈で自セッションの working 以外（他 <sid> の md）→ 一覧から除外
+                elif [ "$_b" = "$_wm_base" ] && [ -f "$WORKING_MEMORY_CONSUMED_FILE" ]; then
                     : # consumed 済み → working は重複とみなし一覧からも除外
                 else
                     _md_files+=("$f")

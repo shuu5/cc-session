@@ -193,19 +193,28 @@ echo "spawned → tmux window '$WINDOW_NAME'"
 source "$SCRIPT_DIR/window-manifest.sh" 2>/dev/null || true
 if declare -f manifest_append_entry > /dev/null 2>&1; then
     _WM_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "main")
+    # window_id(@N) も捕捉する。bd 階層 id（dotted、例 wt-un-3sh.3.5）は tmux の -t ターゲット構文
+    # （`.` が window.pane 区切り）と衝突し、`-t <名前>` の send-keys/capture-pane が "can't find pane"
+    # で失敗する（独立 socket で実証）。set-hook は **不変な window_id で参照**して dotted 名でも確実に
+    # 紐づける（id 解決失敗時のみ名前へフォールバック＝後方互換）。
+    # NB: 送達(session-comm.sh)・状態(session-state.sh)は resolve_target で名前→session:index を
+    #     先に解決済み＝既に dot-safe。fleet-monitor の照合も name 文字列一致で dot-safe。
     _WM_INDEX=$(tmux list-windows -F '#{window_name} #{window_index}' 2>/dev/null \
         | awk -v n="$WINDOW_NAME" '$1==n {print $2; exit}')
+    _WM_WID=$(tmux list-windows -F '#{window_id} #{window_name}' 2>/dev/null \
+        | awk -v n="$WINDOW_NAME" '$2==n {print $1; exit}')
     manifest_append_entry "$WINDOW_NAME" "$_WM_SESSION" "${_WM_INDEX:-0}" \
         "$CWD" "$CWD" "wt" 2>/dev/null || true
-    # kill / rename 時の tombstone hook
-    # WINDOW_NAME は generate_window_name が英数字・ハイフンのみで生成するため
-    # printf '%q' の出力にシングルクォートを破る文字は含まれない（安全）
+    # kill / rename 時の tombstone hook（-t は dot-safe な window_id で参照）
+    # WINDOW_NAME は英数字・ハイフン・ドット（bd 階層 id）のみで構成され、tombstone 引数は
+    # printf '%q' 済み＝run-shell の単一引用符を破る文字は含まれない（'.' は引用符を破らない・安全）。
     _WM_SCRIPT=$(printf '%q' "$SCRIPT_DIR/window-manifest.sh")
     _WM_WINNAME=$(printf '%q' "$WINDOW_NAME")
-    tmux set-hook -t "$WINDOW_NAME" pane-died \
+    _WM_HOOK_TGT="${_WM_WID:-$WINDOW_NAME}"
+    tmux set-hook -t "$_WM_HOOK_TGT" pane-died \
         "run-shell 'bash $_WM_SCRIPT tombstone $_WM_WINNAME'" 2>/dev/null || true
     # rename 時は旧 window_name を tombstone にする
-    tmux set-hook -t "$WINDOW_NAME" window-renamed \
+    tmux set-hook -t "$_WM_HOOK_TGT" window-renamed \
         "run-shell 'bash $_WM_SCRIPT tombstone $_WM_WINNAME'" 2>/dev/null || true
 fi
 

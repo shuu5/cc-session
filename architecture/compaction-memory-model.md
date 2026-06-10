@@ -124,13 +124,42 @@ compaction フックは cc-session をロードした全プロジェクトで発
 window 状態系（`$HOME` 配下 namespace）と異なり、Working Memory は会話/プロジェクト固有のため
 既定でプロジェクトローカル（`$PWD/.claude-session`）に置く。
 
-| 変数 | 既定 |
+| 変数 | 既定（session id 解決時 / 非解決時） |
 |---|---|
 | `WORKING_MEMORY_DIR` | `$PWD/.claude-session` |
-| `WORKING_MEMORY_FILE` | `$WORKING_MEMORY_DIR/working-memory.md` |
-| `WORKING_MEMORY_CONSUMED_FILE` | `$WORKING_MEMORY_DIR/working-memory.consumed.md` |
-| `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled` |
-| `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt` |
+| `WORKING_MEMORY_FILE` | `…/working-memory.<sid>.md` / `…/working-memory.md` |
+| `WORKING_MEMORY_CONSUMED_FILE` | `…/working-memory.<sid>.consumed.md` / `…/working-memory.consumed.md` |
+| `COMPACTION_ENABLED_MARKER` | `$WORKING_MEMORY_DIR/.compaction-enabled`（session-scoped でない）|
+| `COMPACTION_LOG_FILE` | `$WORKING_MEMORY_DIR/compaction-log.txt`（session-scoped でない）|
+| `WORKING_MEMORY_SESSION_ID` | 解決済み session id（可観測性のため export。空＝legacy 非 scoped 経路）|
+
+### session-scoped 化（un-gcu・cwd=anchor 同居 2 セッションの衝突根絶）
+
+`session-env.sh` が `WORKING_MEMORY_FILE` を `$PWD/.claude-session/working-memory.md` に**固定**解決して
+いたため、cwd=anchor の複数 claude セッションが ready-compaction で**同一ファイルを奪い合い上書き**した
+（2026-06-09 実害: あるセッションが別セッションの退避内容を破壊）。退避ファイル名へ **session id** を含める
+session-scoped 化で構造的に根絶する。
+
+- **session id の解決順（defense-in-depth）**: `WM_SESSION_ID`（hook が stdin の `.session_id` から設定／
+  test override）> `CLAUDE_CODE_SESSION_ID`（bash tool / hook 継承 env）> 空。
+  - **stdin が一次・env が二次の理由**: 全 hook の stdin JSON には `session_id` が**必ず**来る（documented・
+    `/compact` 跨ぎで同一値を保持）。一方 `CLAUDE_CODE_SESSION_ID` が hook subprocess の env に継承されるかは
+    **undocumented（不確実）**。よって hook は stdin を一次ソース、env を二次フォールバックにする。抽出は
+    `scripts/lib/hook-session-id.sh`（`jq -r '.session_id // empty'`、jq 不在時 sed フォールバック）が担い、
+    各 hook が `session-env.sh` を source する**前**に `WM_SESSION_ID` を export する。bash tool（LLM）文脈では
+    `CLAUDE_CODE_SESSION_ID` が env に存在する（verified）ため二次経路が拾う。
+- **slug 化（pure-bash・subprocess 不使用）**: `[A-Za-z0-9-]` 以外を除去（`..` / `/` を構造排除＝path
+  traversal 不能）し 64 文字上限。slug 後に空へ縮退したら legacy 非 scoped 名へフォールバック。
+- **marker / log は session-scoped にしない**: opt-in（`.compaction-enabled`）と log は**プロジェクト単位**の
+  共有概念であって 1 セッションに帰属させると opt-in の意味が壊れる。
+- **後方互換＝coexistence（自動移行はしない）**: 既存 legacy `working-memory.md` を scoped 名へ自動移行
+  **しない**。移行は「2 セッションが同一 legacy を奪い合う」衝突を再導入する。退避ファイルは
+  `lifecycle=temporary`（1 effort スコープ）なので、upgrade 直後の旧 legacy ファイル orphan は**最大 1
+  サイクルの carry-forward 損失で自己回復**する（その後は scoped 連鎖が自走）。session id が解決不能な
+  非 Claude Code 文脈・明示 override 時のみ legacy 非 scoped 名を使う。
+- **consumed 連鎖も session-scoped**: PostCompact の `working-memory.<sid>.md → working-memory.<sid>.consumed.md`
+  の rename と、次サイクル PreCompact の consumed→新 working への carry-forward は同一 `<sid>` 内で閉じる
+  （別セッションの consumed を拾わない＝連鎖が混線しない）。
 
 ## working-memory.md スキーマ（2 節）
 

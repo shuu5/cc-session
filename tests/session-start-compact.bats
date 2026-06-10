@@ -9,6 +9,9 @@ setup() {
     export WORKING_MEMORY_DIR="$SANDBOX/.claude-session"
     # 派生変数は session-env.sh に解決させる（外部環境の汚染を排除）
     unset WORKING_MEMORY_FILE WORKING_MEMORY_CONSUMED_FILE COMPACTION_ENABLED_MARKER COMPACTION_LOG_FILE
+    # ambient な実セッション id を排除し legacy 非 scoped パスで決定論化（session-scoped は
+    # working-memory-session-scoped.bats が固定。これらは legacy 経路の回帰ガード）。
+    unset CLAUDE_CODE_SESSION_ID WM_SESSION_ID WORKING_MEMORY_SESSION_ID
     WM_FILE="$WORKING_MEMORY_DIR/working-memory.md"
     MARKER="$WORKING_MEMORY_DIR/.compaction-enabled"
 }

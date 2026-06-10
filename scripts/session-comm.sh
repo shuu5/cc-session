@@ -74,7 +74,7 @@ Environment:
   SESSION_COMM_SUBMIT_ENTER_MAX  paste 後に未 submit（input-waiting 滞留）なら撃つ追い Enter の上限
                                  （既定 3, 0=無効）。複数行 paste が [Pasted text +M lines] に
                                  折りたたまれ既定 Enter が吸収される事象の救済（un-iur）。承認/質問
-                                 ダイアログ可視時は modality ガードで送らない。非負整数のみ。
+                                 ダイアログ可視時は modality ガードで送らない。leading-zero 無しの非負整数のみ。
 EOF
     exit 1
 }
@@ -429,11 +429,17 @@ cmd_inject_file() {
     # paste 後の算術文脈で初めて評価すると、malformed 値（例 'abc'）が set -u 下で `unbound variable` を
     # 投げて『paste 済み・初回 Enter 送出済み』の状態で abort し、confirm_receipt==0 経路（read-back 無し）の
     # 呼び出し側に『送達済みか未送達か』を判別不能にする fail-confusing パスになる。ここで弾けばその窓を閉じる。
-    # 受理: 非負整数のみ。0 は『追い Enter を意図的に無効化』として許す（=複数行 paste 折りたたみ時に
-    # Enter 吸収が起きても submit は初回 Enter 任せ＝未送信のまま返りうる）。負値は un-iur を無音で殺すため拒否。
+    # 受理: 正準な非負整数のみ（0 または leading-zero 無しの正整数）。0 は『追い Enter を意図的に無効化』
+    # として許す（=複数行 paste 折りたたみ時に Enter 吸収が起きても submit は初回 Enter 任せ＝未送信のまま
+    # 返りうる）。負値は un-iur を無音で殺すため拒否。
+    # leading-zero 拒否（errata un-iur）: `^[0-9]+$` だと 008/009 を通すが、下の算術文脈
+    #   [[ "$_se_i" -lt "$_se_max" ]] / [[ "$_rb_resub" -lt "$_se_max" ]] で bash が leading-zero を
+    # 不正 octal と解釈し `value too great for base` → 条件が偽になり追い Enter/救済 Enter が 0 回・exit 0、
+    # つまり本修正自体が無音で disable される fail-open になる。兄弟 --confirm-receipt/--wait（^[1-9][0-9]*$）と
+    # 対称に leading-zero を明示 exit 1 で拒否し、silent 再解釈ではなく fail-closed で弾く。0=disable は温存。
     local _se_max="${SESSION_COMM_SUBMIT_ENTER_MAX:-3}"
-    if ! [[ "$_se_max" =~ ^[0-9]+$ ]]; then
-        echo "Error: SESSION_COMM_SUBMIT_ENTER_MAX requires a non-negative integer (got '$_se_max')" >&2
+    if ! [[ "$_se_max" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "Error: SESSION_COMM_SUBMIT_ENTER_MAX requires a non-negative integer without leading zeros (got '$_se_max')" >&2
         exit 1
     fi
 

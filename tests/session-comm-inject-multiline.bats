@@ -321,6 +321,59 @@ STATE_EOF
     [ "$n" -eq 1 ]
 }
 
+@test "validation: SESSION_COMM_SUBMIT_ENTER_MAX=008（leading-zero）は paste 前に exit 1（octal fail-open 回帰・errata）" {
+    # errata: `^[0-9]+$` は 008/009 を通すが、算術文脈 [[ "$_se_i" -lt "$_se_max" ]] で bash が leading-zero を
+    # 不正 octal と解釈し `value too great for base` → 条件が偽 → 追い Enter 0 回・exit 0 で本修正が無音 disable
+    # （fail-open）。leading-zero を明示 exit 1 で拒否する仕様（^(0|[1-9][0-9]*)$）の回帰ガード。
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then echo "input-waiting"; fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+
+    export SESSION_COMM_SUBMIT_ENTER_MAX=008
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"SESSION_COMM_SUBMIT_ENTER_MAX"*"leading zeros"* ]]
+    # fail-closed: paste（load-buffer/paste-buffer）に到達せず abort する＝fail-open(無音 disable)に陥らない。
+    ! grep -q '^paste-buffer' "$TMUX_CALL_LOG"
+    ! grep -q '^load-buffer' "$TMUX_CALL_LOG"
+}
+
+@test "validation: SESSION_COMM_SUBMIT_ENTER_MAX=009（leading-zero・別 octal 不正桁）も exit 1" {
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then echo "input-waiting"; fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+
+    export SESSION_COMM_SUBMIT_ENTER_MAX=009
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"SESSION_COMM_SUBMIT_ENTER_MAX"*"leading zeros"* ]]
+}
+
+@test "validation: SESSION_COMM_SUBMIT_ENTER_MAX=10（leading-zero 無しの複数桁）は正常受理（正の対照）" {
+    # leading-zero 拒否が canonical な複数桁値を巻き込まないことの positive control。
+    cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
+#!/bin/bash
+if [[ "$1" == "wait" ]]; then exit 0; fi
+if [[ "$1" == "state" ]]; then echo "processing"; fi
+exit 0
+STATE_EOF
+    chmod +x "$SANDBOX/mock_scripts/session-state.sh"
+
+    export SESSION_COMM_SUBMIT_ENTER_MAX=10
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5
+    [ "$status" -eq 0 ]   # processing 即観測で追い Enter 0 回・正常完了（受理されている＝exit 1 にならない）
+    local n; n=$(_count_enters)
+    [ "$n" -eq 1 ]
+}
+
 # --- modality ガード（承認/AskUserQuestion ダイアログでの誤発火防止）-----------------
 # 正当な post-submit input-waiting（承認ダイアログ）で追い Enter を送らない。
 # ダイアログでの Enter は『既定選択の確定』という実アクションであり no-op ではないため抑止する。

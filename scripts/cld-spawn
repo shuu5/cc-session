@@ -24,6 +24,7 @@ CWD="$(pwd)"
 CD_SPECIFIED=false
 ENV_FILE=""
 WINDOW_NAME=""
+BD_ID=""
 FORCE_NEW=0
 WAIT_TIMEOUT=60
 CLD_MODEL=""
@@ -45,6 +46,11 @@ while [[ $# -gt 0 ]]; do
         --window-name)
             [[ -z "${2:-}" ]] && { echo "Error: --window-name に名前を指定してください" >&2; exit 1; }
             WINDOW_NAME="$2"
+            shift 2
+            ;;
+        --bd-id)
+            [[ -z "${2:-}" ]] && { echo "Error: --bd-id に id を指定してください" >&2; exit 1; }
+            BD_ID="$2"
             shift 2
             ;;
         --force-new)
@@ -88,7 +94,14 @@ if $CD_SPECIFIED; then
     fi
 fi
 
-# ウィンドウ名: 未指定時は意味論的命名（失敗時は時刻ベースにフォールバック）
+# ウィンドウ名の解決順:
+#   1. --window-name 明示（最優先）
+#   2. --bd-id 指定時は wt-<id>（fleet-monitor の worker↔window 完全一致照合の producer 規約）
+#   3. 意味論的命名 generate_window_name（git 状態由来）
+#   4. 時刻ベースフォールバック wt-HHMMSS-$$
+if [[ -z "$WINDOW_NAME" && -n "$BD_ID" ]]; then
+    WINDOW_NAME=$(spawn_window_name "$BD_ID")
+fi
 if [[ -z "$WINDOW_NAME" ]]; then
     if ! WINDOW_NAME=$(generate_window_name wt "$CWD" "$CWD" 2>/dev/null); then
         WINDOW_NAME="wt-$(date +%H%M%S)-$$"

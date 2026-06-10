@@ -97,10 +97,11 @@ worker セッションを bd issue に紐づけて起動するとき、プロン
       # bd id を特定（NLU で明示特定した値があれば優先、無ければ prompt から best-effort 抽出）
       BD_ID="${BD_ID:-$(extract_bd_id "$PROMPT" 2>/dev/null || true)}"
 
-      # bd id 有り: spawn/<id>-<HHMMSS>（fleet-monitor が ◆ 照合する規約名）
-      # bd id 無し: spawn/<HHMMSS>-<pid>（現行フォールバック）
-      # いずれも -<HHMMSS> / -$$ サフィックスで同一秒の並列 spawn でも distinct。
-      # これが無いと秒解像度ゆえ同一秒の 2 spawn が同名ブランチ → git worktree add -b が衝突。
+      # bd id 有り: spawn/<id>-<HHMMSS>（fleet-monitor が ◆ 照合する規約名。pid は含めない
+      #   ＝consumer の末尾 -<数字> 1 回剥がし照合と整合させるため）。1 issue = 1 cell 運用が前提で、
+      #   同一 id を同一秒に二重 spawn すると branch 名が完全一致するが、git worktree add -b が
+      #   fail-loud で検知する（規約外の二重 spawn を黙って通さない）。
+      # bd id 無し: spawn/<HHMMSS>-<pid>（フォールバック）。pid 込みのため同一秒の並列 spawn でも distinct。
       BRANCH_NAME="$(spawn_branch_name "$BD_ID")"
       WORKTREE_DIR="$PROJECT_DIR/.worktrees/$BRANCH_NAME"
       ```

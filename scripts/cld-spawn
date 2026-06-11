@@ -2,10 +2,21 @@
 # cld-spawn - Start a new Claude Code session in a new tmux window
 #
 # Usage:
-#   cld-spawn [--cd DIR] [--env-file PATH] [--window-name NAME] [--timeout N] [--model MODEL] [PROMPT]
+#   cld-spawn [OPTIONS] [PROMPT]
+#
+# Options:
+#   --cd DIR            起動セッションの作業ディレクトリ（既定: 現在の cwd）
+#   --env-file PATH     起動前に source する env ファイル（既定: ~/.cld-env）
+#   --window-name NAME  tmux window 名を明示指定
+#   --bd-id ID          bd issue id 連動命名（wt-<id>）
+#   --force-new         既存 window を再利用せず必ず新規作成
+#   --timeout N         inject 待機秒（正の整数・既定: 60）
+#   --model MODEL       cld に渡す --model
+#   -h, --help          この usage を表示して終了
 #
 # PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
 # これにより改行・特殊文字を含むプロンプトが安全に渡せる。
+# PROMPT が '-' で始まる場合は '--' を置いて区切る（例: cld-spawn -- "-から始まる prompt"）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -14,11 +25,26 @@ source "$SCRIPT_DIR/session-name.sh"
 # shellcheck source=./lib/session-env.sh
 source "$SCRIPT_DIR/lib/session-env.sh"
 
-# tmux check
-if [[ -z "${TMUX:-}" ]]; then
-    echo "Error: tmux内で実行してください" >&2
-    exit 1
-fi
+# usage を表示（冒頭コメントの Usage と同内容）。--help は stdout、エラー時は stderr へ。
+usage() {
+    cat <<EOF
+Usage:
+  $(basename "$0") [OPTIONS] [PROMPT]
+
+Options:
+  --cd DIR            起動セッションの作業ディレクトリ（既定: 現在の cwd）
+  --env-file PATH     起動前に source する env ファイル（既定: ~/.cld-env）
+  --window-name NAME  tmux window 名を明示指定
+  --bd-id ID          bd issue id 連動命名（wt-<id>）
+  --force-new         既存 window を再利用せず必ず新規作成
+  --timeout N         inject 待機秒（正の整数・既定: 60）
+  --model MODEL       cld に渡す --model
+  -h, --help          この usage を表示して終了
+
+PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
+PROMPT が '-' で始まる場合は '--' を置いて区切る（例: $(basename "$0") -- "-から始まる prompt"）。
+EOF
+}
 
 CWD="$(pwd)"
 CD_SPECIFIED=false
@@ -71,11 +97,32 @@ while [[ $# -gt 0 ]]; do
             CLD_MODEL="$2"
             shift 2
             ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            # オプション終端: 以降は '-' で始まっても PROMPT として扱う
+            shift
+            break
+            ;;
+        -*)
+            # 未知オプションを fail-loud で拒否（PROMPT に流して誤 spawn しない）
+            echo "Error: 未知のオプション: $1" >&2
+            usage >&2
+            exit 1
+            ;;
         *)
             break
             ;;
     esac
 done
+
+# tmux check（--help / 未知オプション判定の後＝help は tmux 外でも機能する）
+if [[ -z "${TMUX:-}" ]]; then
+    echo "Error: tmux内で実行してください" >&2
+    exit 1
+fi
 
 # --env-file 未指定時は CLD_ENV_FILE 環境変数、次に ~/.cld-env をデフォルトとして使用
 ENV_FILE="${ENV_FILE:-${CLD_ENV_FILE:-$HOME/.cld-env}}"

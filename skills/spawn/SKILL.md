@@ -32,7 +32,7 @@ description: |
 | cd | 「tradingで」「別ディレクトリで」「paperプロジェクトで」 | AskUserQuestion でプロジェクト選択 |
 | window名指定 | 「11というウィンドウで」「window名はXで」 | `--window-name` オプション使用 |
 | **bd id** | プロンプト中の `un-cbi` 形式 / `#123` 数値形式の issue id | `BD_ID` に格納し命名規約へ反映（後述） |
-| prompt | cd 意図なしのテキスト | `cld-spawn "$PROMPT"` を即実行 |
+| prompt | cd 意図なしのテキスト | `cld-spawn -- "$PROMPT"` を即実行 |
 
 **優先順位**: worktree > cd > window名指定 > prompt。`--worktree` と cd 意図が同時検出された場合は `--worktree` を優先（cd は無視）。
 
@@ -78,7 +78,8 @@ worker セッションを bd issue に紐づけて起動するとき、プロン
    - 完了監視はデフォルト ON（後述の Step 4）。不要なら「監視なし」、途中経過も追うなら「監視して」と指示
 
    ### パターン C: cd 意図なし・テキストあり → 即実行
-   テキストを prompt として `cld-spawn "$PROMPT"` を実行。
+   テキストを prompt として `cld-spawn -- "$PROMPT"` を実行（PROMPT は '--' の後に置き、
+   '-' 始まり PROMPT の誤拒否を構造的に封鎖する）。
 
    ### パターン D: --worktree → worktree 作成 + セッション起動
 
@@ -134,8 +135,10 @@ worker セッションを bd issue に紐づけて起動するとき、プロン
       # --bd-id は cld-spawn 側の window 名フォールバック（--window-name 未指定時の wt-<id> 採用）の
       # ためにのみ併渡しする（空なら省略可）。ここでは --window-name を明示しているので window 名は
       # それが優先され、--bd-id は実質 no-op（cld-spawn は bd id を別途記録しない）。
+      # PROMPT は必ず '--' の後に置く。'-' 始まりの PROMPT を未知オプション扱いで誤拒否させない
+      # ための構造的封鎖（cld-spawn は '--' 以降を PROMPT として扱う）。
       bash "$SCRIPT_DIR/cld-spawn" --cd "$WORKTREE_DIR" --window-name "$WINDOW_NAME" \
-        ${BD_ID:+--bd-id "$BD_ID"} "$PROMPT"
+        ${BD_ID:+--bd-id "$BD_ID"} -- "$PROMPT"
       ```
 
    6. **ロールバック**: cld-spawn が失敗した場合、作成した worktree を削除:
@@ -159,7 +162,8 @@ worker セッションを bd issue に紐づけて起動するとき、プロン
    # bd id があれば渡す（--window-name 未指定時に cld-spawn が wt-<id> を採用）
    [[ -n "$BD_ID" ]] && OPTS+=(--bd-id "$BD_ID")
 
-   bash "$SCRIPT_DIR/cld-spawn" "${OPTS[@]}" "$FULL_PROMPT"
+   # PROMPT は必ず '--' の後に置く（'-' 始まり PROMPT の誤拒否を構造的に封鎖）。
+   bash "$SCRIPT_DIR/cld-spawn" "${OPTS[@]}" -- "$FULL_PROMPT"
    ```
 
    cld-spawn は以下を順に実行:

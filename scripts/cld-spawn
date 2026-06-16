@@ -1,22 +1,9 @@
 #!/bin/bash
 # cld-spawn - Start a new Claude Code session in a new tmux window
 #
-# Usage:
-#   cld-spawn [OPTIONS] [PROMPT]
-#
-# Options:
-#   --cd DIR            起動セッションの作業ディレクトリ（既定: 現在の cwd）
-#   --env-file PATH     起動前に source する env ファイル（既定: ~/.cld-env）
-#   --window-name NAME  tmux window 名を明示指定
-#   --bd-id ID          bd issue id 連動命名（wt-<id>）
-#   --force-new         既存 window を再利用せず必ず新規作成
-#   --timeout N         inject 待機秒（正の整数・既定: 60）
-#   --model MODEL       cld に渡す --model
-#   -h, --help          この usage を表示して終了
-#
-# PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
-# これにより改行・特殊文字を含むプロンプトが安全に渡せる。
-# PROMPT が '-' で始まる場合は '--' を置いて区切る（例: cld-spawn -- "-から始まる prompt"）。
+# 使い方（オプション一覧・PROMPT の渡し方・'-' 始まり PROMPT の '--' 区切り）は
+# usage() 関数 ／ `cld-spawn --help` を SSOT とする。ドリフト防止のため、この header に
+# オプション一覧を二重に持たない（usage() を読むこと）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -46,6 +33,26 @@ PROMPT が '-' で始まる場合は '--' を置いて区切る（例: $(basenam
 EOF
 }
 
+# 値取りオプションの値スロットを検証して fail-loud にする（全値取りオプション共通の SSOT）:
+#   - 空（値なし）            → エラー（従来挙動）
+#   - '-' で始まるトークン    → 直後のオプションを値として取りこぼした可能性が高いので拒否する。
+#                               cld-spawn の値取りオプションは '-' 始まりの値を受け付けない。
+#                               '--' 終端より前で値スロットへ来た '-...' は打ち間違い／別オプションの
+#                               誤吸着とみなし、ここで止めて誤った window 名・env-file 等での spawn を防ぐ。
+# $1 = オプション名（エラー表示用） / $2 = 値スロット（未指定なら空文字）
+require_value() {
+    local opt="$1" val="${2-}"
+    if [[ -z "$val" ]]; then
+        echo "Error: $opt に値を指定してください" >&2
+        exit 1
+    fi
+    if [[ "$val" == -* ]]; then
+        echo "Error: $opt の値が '-' で始まっています（次のオプションの取りこぼし防止のため拒否）: $val" >&2
+        echo "       値ではなくオプションを書いた可能性があります。値が本当に必要なら正しい順序で指定してください。" >&2
+        exit 1
+    fi
+}
+
 CWD="$(pwd)"
 CD_SPECIFIED=false
 ENV_FILE=""
@@ -59,23 +66,23 @@ CLD_MODEL=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cd)
-            [[ -z "${2:-}" ]] && { echo "Error: --cd にディレクトリを指定してください" >&2; exit 1; }
+            require_value --cd "${2-}"
             CWD="$2"
             CD_SPECIFIED=true
             shift 2
             ;;
         --env-file)
-            [[ -z "${2:-}" ]] && { echo "Error: --env-file にパスを指定してください" >&2; exit 1; }
+            require_value --env-file "${2-}"
             ENV_FILE="$2"
             shift 2
             ;;
         --window-name)
-            [[ -z "${2:-}" ]] && { echo "Error: --window-name に名前を指定してください" >&2; exit 1; }
+            require_value --window-name "${2-}"
             WINDOW_NAME="$2"
             shift 2
             ;;
         --bd-id)
-            [[ -z "${2:-}" ]] && { echo "Error: --bd-id に id を指定してください" >&2; exit 1; }
+            require_value --bd-id "${2-}"
             BD_ID="$2"
             shift 2
             ;;
@@ -84,7 +91,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --timeout)
-            [[ -z "${2:-}" ]] && { echo "Error: --timeout に秒数を指定してください" >&2; exit 1; }
+            require_value --timeout "${2-}"
             WAIT_TIMEOUT="$2"
             if ! [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
                 echo "Error: --timeout には正の整数を指定してください" >&2
@@ -93,7 +100,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --model)
-            [[ -z "${2:-}" ]] && { echo "Error: --model にモデル名を指定してください" >&2; exit 1; }
+            require_value --model "${2-}"
             CLD_MODEL="$2"
             shift 2
             ;;

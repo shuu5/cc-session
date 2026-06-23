@@ -45,6 +45,8 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 
 付随する PreCompact / PostCompact / SessionStart(compact) フック（`hooks/hooks.json`）が圧縮の前後で退避・復元と命令の carry-forward を自動化する。これらは **opt-in**: `.claude-session/.compaction-enabled` マーカーがあるプロジェクトでのみ発火する（スキル初回実行時に自動作成、他プロジェクトでは no-op）。
 
+加えて SessionStart(clear) フック（`session-start-clear.sh`）が、`/compact` ではなく **`/clear`（文脈の完全リセット）してから Working Memory を読み込んで再開**する運用の安全網になる。`/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**（「退避ファイルあり: `<path>`。続きなら Read してください」）だけを出す——`cat` 自動注入も `consumed` への mv も行わない（PostCompact の自動復元とは責務が違う）。厳密な session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で**全件列挙**してフォールバックする（`/clear` で session_id が変わる場合への防御。最新 1 件だけ出すと自分の古い退避ファイルが並走セッションのファイルに隠れるため全件出す）。フォールバック時の候補は **cwd を共有する別セッション由来の可能性もある**ため、原因を断定せず「別セッション由来、または sid が変わった自セッションのファイルの可能性」と正直に提示し、読むか否かはユーザー判断に委ねる（read-only ゆえ上書き破壊は起こさない）。設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節。
+
 退避ファイルは **session-scoped**（`working-memory.<sid>.md`）。cwd=anchor の複数セッションが同一ファイルを奪い合う衝突（2026-06-09 実害）を構造的に根絶するため、ファイル名に session id を含める。session id は hook stdin の `.session_id`（一次）→ `CLAUDE_CODE_SESSION_ID` env（二次フォールバック）で解決し、解決不能なら legacy 非 scoped 名（`working-memory.md`・後方互換）へ落ちる。opt-in マーカーと log はプロジェクト共有なので session-scoped にしない。設計判断（自動移行はせず coexistence・consumed 連鎖も同一セッション内に閉じる）は `architecture/compaction-memory-model.md`。
 
 2 節スキーマ・carry-forward の実体は `scripts/lib/working-memory.sh`。設計詳細は `architecture/compaction-memory-model.md`（2 軸 × carrier モデルの SSOT）、フェーズ別の決定根拠は `architecture/ready-compaction-redesign.md` を参照。

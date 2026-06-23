@@ -24,9 +24,9 @@
 - `scripts/` — セッション管理スクリプト群（`cld`, `cld-spawn`, `cld-fork`, `session-state.sh`, `session-comm.sh`, `session-comm-backend-tmux.sh`, `session-name.sh`, `window-manifest.sh`, `claude-session-save.sh` 等）＋ `enforce-unlock`〔hard 強制の marker を人間が生シェルで作る helper〕
   - **spawn の送達は read-back で受理を確認**（tmux paste 成功＝トランスポート層成功 ≠ claude 受理）: `cld-spawn` は `wait-ready`→`inject-file --confirm-receipt` で送達し、welcome 起動 race で初回 drop しても有界リトライで再送、偽 `prompt injected` を出さない。実装/根拠は `scripts/session-comm.sh`（read-back の二段シグナル＋error/exited debounce）・`scripts/cld-spawn`（リトライ）・`ccs-ldt`/`ccs-e0i`（PR #19/#20）。なお `cld-fork` は `claude --continue --fork-session` を起動するだけ（プロンプト inject なし＝read-back 対象外）。
   - `cld-spawn` は **`~/.cld-env` を既定で source**（解決順 `--env-file` > `CLD_ENV_FILE` > `~/.cld-env`、不在時は silent skip）＝spawn 先の認証/秘密はこの env ファイル経由。ライブ検証で隔離したい場合は明示的に `--env-file` を渡す。
-- `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh`）＋ `pretooluse-enforce.sh`〔hard 強制 PreToolUse(Bash) hook〕
+- `scripts/hooks/` — compaction フック（`pre-compact.sh` / `post-compact.sh` / `session-start-compact.sh` / `session-start-clear.sh`〔`/clear` 後の read-only ポインタ安全網・bd ccs-et2〕）＋ `pretooluse-enforce.sh`〔hard 強制 PreToolUse(Bash) hook〕
 - `scripts/lib/` — 共有ライブラリ（`session-env.sh`, `path-validate.sh`, `compaction-indicators.sh`〔auto-compaction フェーズ名の SSOT〕, `working-memory.sh`〔2節スキーマ＋carry-forward の SSOT〕, `enforce-policy.sh`〔hard 強制の policy/マッチ/marker 導出の SSOT〕）
-- `hooks/hooks.json` — フック登録（PreToolUse:Bash / PreCompact / PostCompact / SessionStart:compact、自動検出）
+- `hooks/hooks.json` — フック登録（PreToolUse:Bash / PreCompact / PostCompact / SessionStart:compact / SessionStart:clear、自動検出）
 - `architecture/` — 設計ドキュメント（`compaction-memory-model.md`〔記憶外部化の設計 SSOT〕, `ready-compaction-redesign.md`〔フェーズ別の決定根拠・§9.6 が hard 強制の設計 SSOT〕, `enforce-policy.example.json`〔policy スキーマの正典例〕, `window-manifest-v1.schema.json` 等）
 - `tests/` — bats テスト
 

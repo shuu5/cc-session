@@ -125,7 +125,7 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 
 - 退避先は既定で作業ディレクトリ直下 `$WORKING_MEMORY_DIR`（`.claude-session/`、環境変数で上書き可）
 - compaction フックは opt-in マーカーがあるプロジェクトでのみ動作する
-- **`/clear` 経路の安全網**: `/compact` でなく `/clear`（文脈リセット）してから退避内容を読み込んで再開する場合、`SessionStart(clear)` フック（`session-start-clear.sh`）が `/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**だけを出す（`cat` 自動注入も `consumed` mv もしない）。厳密 session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で全件列挙してフォールバックする（最新 1 件のみだと自分の古いファイルが並走セッションのファイルに隠れるため。候補は別セッション由来の可能性もあり原因は断定しない）。`/clear` は `PreCompact`/`PostCompact` を発火させない（compaction 専用）ため、自動復元はされず手動 Read 前提の安全網である点に注意（設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節・bd ccs-et2）
+- **`/clear` 経路の安全網**: `/compact` でなく `/clear`（文脈リセット）してから退避内容を読み込んで再開する場合、`SessionStart(clear)` フック（`session-start-clear.sh`）が `/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**だけを出す（`cat` 自動注入も `consumed` mv もしない）。厳密 session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で全件列挙してフォールバックする（`/clear` は session_id を変える〔実測 verified〕ため厳密一致は空振りし、この全件列挙が復帰の主経路。最新 1 件のみだと自分の古いファイルが並走セッションのファイルに隠れるため。候補は別セッション由来の可能性もあり原因は断定しない）。`/clear` は `PreCompact`/`PostCompact` を発火させない（compaction 専用）ため、自動復元はされず手動 Read 前提の安全網である点に注意（設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節・bd ccs-et2）
 - PostCompact が復元すると Working Memory は `$WORKING_MEMORY_CONSUMED_FILE`（session-scoped: `working-memory.<sid>.consumed.md`）へ mv される（削除しない）。
   この consumed が次サイクルの **carry-forward の供給源**になる（命令・制約節を機械引き継ぎ）。退避ファイルは session id を含むため cwd=anchor の複数セッションでも互いに上書きしない（`un-gcu`）
 - 2節スキーマ・タグ書式・carry-forward の実体は `scripts/lib/working-memory.sh`（SSOT）

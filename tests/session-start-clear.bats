@@ -68,7 +68,7 @@ teardown() {
     [ ! -f "$WORKING_MEMORY_DIR/working-memory.consumed.md" ]
 }
 
-@test "session-start-clear: 厳密一致なし → 最新 mtime の working-memory*.md へフォールバック＋別セッション caveat" {
+@test "session-start-clear: 厳密一致なし → 非 consumed 候補を列挙＋原因を断定しない caveat（read-only 不変）" {
     mkdir -p "$WORKING_MEMORY_DIR"
     touch "$MARKER"
     # 現セッションは別 sid（exact 一致ファイルは存在しない）
@@ -76,14 +76,18 @@ teardown() {
     printf '%s\n' "OLD" > "$WORKING_MEMORY_DIR/working-memory.oldsid.md"
     run bash "$HOOK" </dev/null
     [ "$status" -eq 0 ]
-    [[ "$output" == *"退避された作業状態があります（read-only ポインタ）"* ]]
+    [[ "$output" == *"現セッション名義"* ]]
     [[ "$output" == *"working-memory.oldsid.md"* ]]
-    [[ "$output" == *"別セッション由来の可能性"* ]]
-    # フォールバックでもファイルを壊さない
-    [ -f "$WORKING_MEMORY_DIR/working-memory.oldsid.md" ]
+    [[ "$output" == *"別セッション由来"* ]]
+    [[ "$output" == *"可能性"* ]]
+    # 原因を確定断定しない（docs-1 / un-gcu corr-1: changeset 自身が sid 変化を uncertain と明記）
+    [[ "$output" != *"session_id が変わったため"* ]]
+    # read-only 不変: 内容そのまま・consumed を作らない（tq-4 フォールバック経路）
+    [ "$(cat "$WORKING_MEMORY_DIR/working-memory.oldsid.md")" = "OLD" ]
+    [ ! -f "$WORKING_MEMORY_DIR/working-memory.oldsid.consumed.md" ]
 }
 
-@test "session-start-clear: フォールバックは最新 mtime を選ぶ" {
+@test "session-start-clear: フォールバックは全候補を mtime 降順で列挙し古い自前ファイルを隠さない（un-gcu corr-2）" {
     mkdir -p "$WORKING_MEMORY_DIR"
     touch "$MARKER"
     export WM_SESSION_ID="newsid"
@@ -93,8 +97,11 @@ teardown() {
     touch -d '2021-01-01T00:00:00' "$WORKING_MEMORY_DIR/working-memory.bbb.md"
     run bash "$HOOK" </dev/null
     [ "$status" -eq 0 ]
+    # 最新 1 件のみ提示で古い方を隠さない＝両方列挙
+    [[ "$output" == *"working-memory.aaa.md"* ]]
     [[ "$output" == *"working-memory.bbb.md"* ]]
-    [[ "$output" != *"working-memory.aaa.md"* ]]
+    # mtime 降順: bbb(新) が aaa(旧) より前に出る
+    [[ "$output" == *"working-memory.bbb.md"*"working-memory.aaa.md"* ]]
 }
 
 @test "session-start-clear: consumed.md はフォールバック提示対象から除外" {
@@ -121,5 +128,49 @@ teardown() {
     run bash "$HOOK" </dev/null
     [ "$status" -eq 0 ]
     [[ "$output" == *"working-memory.mysid.md"* ]]
-    [[ "$output" != *"別セッション由来の可能性"* ]]
+    [[ "$output" != *"別セッション由来"* ]]
+}
+
+@test "session-start-clear: 本番一次経路 — stdin JSON の .session_id を解決し scoped exact を踏む（tq-1）" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    # WM_SESSION_ID は与えず、stdin の hook JSON から sid を解決させる（本番一次経路）
+    printf '%s\n' "STAGED-SCOPED" > "$WORKING_MEMORY_DIR/working-memory.sidFROMjson.md"
+    run bash "$HOOK" <<< '{"session_id":"sidFROMjson","hook_event_name":"SessionStart","source":"clear"}'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"退避された作業状態があります（read-only ポインタ）"* ]]
+    [[ "$output" == *"working-memory.sidFROMjson.md"* ]]
+    # exact 一致なので別セッション caveat は出さない
+    [[ "$output" != *"別セッション由来"* ]]
+}
+
+@test "session-start-clear: WORKING_MEMORY_DIR が .. を含むと path-validate で no-op（fail-safe・tq-2）" {
+    # marker/退避ファイルは実体パスに作るが、WORKING_MEMORY_DIR に .. を含めて検証を失敗させる。
+    # （.. を含む raw path を path-validate が拒否 → ポインタを一切漏らさない＝fail-safe）
+    mkdir -p "$WORKING_MEMORY_DIR" "$SANDBOX/sub"
+    touch "$MARKER"
+    printf '%s\n' "SHOULD-NOT-LEAK" > "$WORKING_MEMORY_DIR/working-memory.md"
+    export WORKING_MEMORY_DIR="$SANDBOX/sub/../.claude-session"
+    # 派生は session-env が新 WORKING_MEMORY_DIR から再解決する
+    unset COMPACTION_ENABLED_MARKER WORKING_MEMORY_FILE WORKING_MEMORY_CONSUMED_FILE
+    run bash "$HOOK" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"SHOULD-NOT-LEAK"* ]]
+    [[ "$output" != *"退避された作業状態があります"* ]]
+    [[ "$output" != *"現セッション名義"* ]]
+}
+
+@test "session-start-clear: working(古) と consumed(新) 共存 → working を提示し consumed は出さない（tq-3）" {
+    mkdir -p "$WORKING_MEMORY_DIR"
+    touch "$MARKER"
+    export WM_SESSION_ID="newsid"
+    printf '%s\n' "WORKING" > "$WORKING_MEMORY_DIR/working-memory.oldsid.md"
+    printf '%s\n' "CONSUMED" > "$WORKING_MEMORY_DIR/working-memory.oldsid.consumed.md"
+    # consumed をより新しい mtime にしても提示対象外であること
+    touch -d '2020-01-01T00:00:00' "$WORKING_MEMORY_DIR/working-memory.oldsid.md"
+    touch -d '2021-01-01T00:00:00' "$WORKING_MEMORY_DIR/working-memory.oldsid.consumed.md"
+    run bash "$HOOK" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"working-memory.oldsid.md"* ]]
+    [[ "$output" != *"consumed.md"* ]]
 }

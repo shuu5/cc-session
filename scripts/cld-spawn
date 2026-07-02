@@ -26,6 +26,15 @@ Options:
   --force-new         既存 window を再利用せず必ず新規作成
   --timeout N         inject 待機秒（正の整数・既定: 60）
   --model MODEL       cld に渡す --model
+  --disallowed-tools TOOLS
+                      cld→claude へ透過する --disallowed-tools（空白/カンマ区切りの
+                      ツール名。複数指定で累積）。無人 window で AskUserQuestion 等の
+                      対話 tool を物理封鎖する用途。spawn 起動にのみ有効。
+  --inject-existing WINDOW
+                      spawn せず既存の tmux window へ PROMPT を注入する（inject-file +
+                      read-back 受理確認を再利用）。PROMPT 必須。spawn 専用オプション
+                      （--model / --disallowed-tools / --cd / --env-file / --window-name /
+                      --bd-id / --force-new）とは併用不可。
   -h, --help          この usage を表示して終了
 
 PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
@@ -53,6 +62,50 @@ require_value() {
     fi
 }
 
+# deliver_prompt <window> <prompt>
+#   既存の inject-file + read-back（--confirm-receipt）機構で PROMPT を有界リトライ送達する共通ヘルパ。
+#   spawn 経路（新規 window）と --inject-existing 経路（既存 window）の両方から呼ぶ（SSOT・DRY）。
+#   welcome race で初回 paste が drop しても read-back が未着を検出し、settle 後 --clear-first で再送。
+#   inject-file は tmux 層成功だけでは成功扱いにしない（claude の受理を read-back で確認）ため、
+#   非 0 が返るのは「真に未着」のとき＝偽 "prompt injected" を出さない。成功で 0、失敗で非 0 を返す。
+deliver_prompt() {
+    local _win="$1" _prompt="$2"
+    local _pf
+    _pf=$(mktemp /tmp/cld-spawn-prompt-XXXXXX.txt)
+    printf '%s' "$_prompt" > "$_pf"
+
+    # CONFIRM_BUDGET: read-back が「受理」を確認する 1 試行あたりの猶予秒（cld-spawn 既定 10s）。
+    local _confirm_budget="${CLD_CONFIRM_BUDGET:-10}"
+    local _max_attempts="${CLD_INJECT_ATTEMPTS:-3}"
+    local _ok=false _attempt
+    for _attempt in $(seq 1 "$_max_attempts"); do
+        local _clear=()
+        if [[ "$_attempt" -gt 1 ]]; then _clear=(--clear-first); fi
+        if "$SCRIPT_DIR/session-comm.sh" inject-file "$_win" "$_pf" \
+                --wait "$WAIT_TIMEOUT" --confirm-receipt "$_confirm_budget" ${_clear[@]+"${_clear[@]}"}; then
+            _ok=true
+            break
+        fi
+        if [[ "$_attempt" -lt "$_max_attempts" ]]; then sleep 1; fi
+    done
+
+    rm -f "$_pf"
+    $_ok
+}
+
+# _win_exists <window>
+#   指定 tmux window が存在するか（bare 名 / session:window / session:index の各形式）を判定する。
+#   --inject-existing の事前チェック用。存在で 0、不在で 1。
+_win_exists() {
+    local _w="$1"
+    if [[ "$_w" == *:* ]]; then
+        tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep -qFx "$_w" && return 0
+        tmux list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null | grep -qFx "$_w" && return 0
+        return 1
+    fi
+    tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -qFx "$_w"
+}
+
 CWD="$(pwd)"
 CD_SPECIFIED=false
 ENV_FILE=""
@@ -61,6 +114,8 @@ BD_ID=""
 FORCE_NEW=0
 WAIT_TIMEOUT=60
 CLD_MODEL=""
+DISALLOWED_TOOLS=()   # cld→claude へ透過する --disallowed-tools のトークン列（空=未指定）
+INJECT_EXISTING=""    # 非空なら「spawn せず既存 window へ inject」モード（値=対象 window）
 
 # Parse options
 while [[ $# -gt 0 ]]; do
@@ -104,6 +159,26 @@ while [[ $# -gt 0 ]]; do
             CLD_MODEL="$2"
             shift 2
             ;;
+        --disallowed-tools)
+            require_value --disallowed-tools "${2-}"
+            # claude の --disallowed-tools は可変長 <tools...>。値を空白/カンマ区切りで
+            # トークン化し、各ツール名を個別 argv として cld へ渡す（commander variadic が
+            # 確実に配列化する形）。read -ra は glob 展開しないため 'Bash(git:*)' 等の
+            # パターンも安全（unquoted 展開だと * が glob して壊れる）。
+            _dt_arr=()
+            read -ra _dt_arr <<< "${2//,/ }"
+            if [[ "${#_dt_arr[@]}" -eq 0 ]]; then
+                echo "Error: --disallowed-tools に有効なツール名がありません: $2" >&2
+                exit 1
+            fi
+            DISALLOWED_TOOLS+=("${_dt_arr[@]}")
+            shift 2
+            ;;
+        --inject-existing)
+            require_value --inject-existing "${2-}"
+            INJECT_EXISTING="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -128,6 +203,46 @@ done
 # tmux check（--help / 未知オプション判定の後＝help は tmux 外でも機能する）
 if [[ -z "${TMUX:-}" ]]; then
     echo "Error: tmux内で実行してください" >&2
+    exit 1
+fi
+
+# 残りの引数を PROMPT として結合（spawn / inject-existing 両モード共通・先に確定させる）
+PROMPT=""
+if [[ $# -gt 0 ]]; then
+    PROMPT="$*"
+fi
+
+# --- inject-existing モード: spawn せず既存 window へ PROMPT を注入する（inject-file + read-back 再利用） ---
+# spawn（新規 window 作成）を一切行わず、既存 window に対して deliver_prompt を回すだけ。env-file の
+# デフォルト解決より前に分岐して、spawn 専用オプションの誤併用を早期に fail-loud で弾く。
+if [[ -n "$INJECT_EXISTING" ]]; then
+    # spawn 専用オプションとの併用を拒否（意味論的に無関係＝取り違えを黙って無視せず検出する）。
+    # ここで ENV_FILE はまだ raw（--env-file を明示した時のみ非空）＝明示併用のみを検出できる。
+    _conflict=""
+    [[ -n "$CLD_MODEL" ]] && _conflict+=" --model"
+    [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]] && _conflict+=" --disallowed-tools"
+    $CD_SPECIFIED && _conflict+=" --cd"
+    [[ -n "$ENV_FILE" ]] && _conflict+=" --env-file"
+    [[ -n "$WINDOW_NAME" ]] && _conflict+=" --window-name"
+    [[ -n "$BD_ID" ]] && _conflict+=" --bd-id"
+    [[ "$FORCE_NEW" -eq 1 ]] && _conflict+=" --force-new"
+    if [[ -n "$_conflict" ]]; then
+        echo "Error: --inject-existing は spawn 専用オプションと併用できません:${_conflict}" >&2
+        exit 1
+    fi
+    if [[ -z "$PROMPT" ]]; then
+        echo "Error: --inject-existing は PROMPT が必須です（注入する内容が無い）" >&2
+        exit 1
+    fi
+    if ! _win_exists "$INJECT_EXISTING"; then
+        echo "Error: 既存 window が見つかりません: $INJECT_EXISTING" >&2
+        exit 1
+    fi
+    if deliver_prompt "$INJECT_EXISTING" "$PROMPT"; then
+        echo "prompt injected → '$INJECT_EXISTING' (existing)"
+        exit 0
+    fi
+    echo "Error: プロンプトの送達に失敗しました（inject-existing: $INJECT_EXISTING／read-back 未確認）" >&2
     exit 1
 fi
 
@@ -162,16 +277,24 @@ if [[ -z "$WINDOW_NAME" ]]; then
     fi
 fi
 
-# 残りの引数をプロンプトとして結合
-PROMPT=""
-if [[ $# -gt 0 ]]; then
-    PROMPT="$*"
-fi
-
 # Build launcher script to avoid shell quoting issues with tmux
 # cld は引数なしで起動（プロンプトは後から inject-file で送達）
 LAUNCHER=$(mktemp /tmp/cld-spawn-XXXXXX.sh)
 chmod +x "$LAUNCHER"
+
+# cld 起動行を組み立てる（CLD_PATH: テスト時のスタブ差し替え用・本番では未設定 → $SCRIPT_DIR/cld）。
+# --disallowed-tools は claude 側で可変長 <tools...> ゆえ必ず**末尾**に置く（後続トークンが無い＝
+# variadic が余計な語を吸収しない）。各ツール名を個別に %q して cld→claude へ透過する。
+_CLD_LINE=$(printf '%q' "${CLD_PATH:-$SCRIPT_DIR/cld}")
+if [[ -n "${CLD_MODEL:-}" ]]; then
+    _CLD_LINE+=$(printf ' --model %q' "${CLD_MODEL}")
+fi
+if [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]]; then
+    _CLD_LINE+=' --disallowed-tools'
+    for _t in "${DISALLOWED_TOOLS[@]}"; do
+        _CLD_LINE+=$(printf ' %q' "$_t")
+    done
+fi
 
 {
     echo '#!/bin/bash'
@@ -179,12 +302,7 @@ chmod +x "$LAUNCHER"
         echo "source $(printf '%q' "$ENV_FILE") 2>/dev/null || true"
     fi
     echo "cd $(printf '%q' "$CWD") || exit 1"
-    # CLD_PATH: テスト時のスタブ差し替え用（本番では未設定 → $SCRIPT_DIR/cld）
-    if [[ -n "${CLD_MODEL:-}" ]]; then
-        printf '%q --model %q\n' "${CLD_PATH:-$SCRIPT_DIR/cld}" "${CLD_MODEL}"
-    else
-        printf '%q\n' "${CLD_PATH:-$SCRIPT_DIR/cld}"
-    fi
+    echo "$_CLD_LINE"
     # Keep window open on error for diagnosis
     cat <<'TRAP'
 EXIT_CODE=$?
@@ -278,37 +396,10 @@ if [[ -z "$PROMPT" ]]; then
 fi
 
 # --- inject-file --wait + read-back でプロンプトを送達（有界リトライ・ccs-ldt） ---
-
-# プロンプトを一時ファイルに書き出し
-PROMPT_FILE=$(mktemp /tmp/cld-spawn-prompt-XXXXXX.txt)
-printf '%s' "$PROMPT" > "$PROMPT_FILE"
-
-# 起動時 welcome race で初回 paste が drop しても、read-back（--confirm-receipt）が未着を検出し、
-# settle 後に再送（再送時は --clear-first で部分入力をクリア）して確実に着弾させる。
-# inject-file は tmux 層成功だけでは成功扱いにしない（claude が processing へ遷移＝受理を確認）ため、
-# ここで非 0 が返るのは「真に未着」のとき。偽 "prompt injected" を出さない。
-# CONFIRM_BUDGET: read-back が「受理」を確認する 1 試行あたりの猶予秒。claude が prompt 受理後に
-# 内容を画面表示 or processing 表示するまでの時間（通常 1-3s、重い MCP 初期化で延びうる）を上回る必要がある。
-# 短すぎると正常 prompt を未着誤判定して再送（二重投入リスク）、長すぎると失敗確定が遅れる。既定 10s。
-CONFIRM_BUDGET="${CLD_CONFIRM_BUDGET:-10}"
-MAX_ATTEMPTS="${CLD_INJECT_ATTEMPTS:-3}"
-INJECT_OK=false
-for _attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-    _clear=()
-    if [[ "$_attempt" -gt 1 ]]; then _clear=(--clear-first); fi
-    if "$SCRIPT_DIR/session-comm.sh" inject-file "$WINDOW_NAME" "$PROMPT_FILE" \
-            --wait "$WAIT_TIMEOUT" --confirm-receipt "$CONFIRM_BUDGET" ${_clear[@]+"${_clear[@]}"}; then
-        INJECT_OK=true
-        break
-    fi
-    if [[ "$_attempt" -lt "$MAX_ATTEMPTS" ]]; then sleep 1; fi
-done
-
-rm -f "$PROMPT_FILE"
-
-if ! $INJECT_OK; then
-    echo "Error: プロンプトの送達に失敗しました（${MAX_ATTEMPTS}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2
-    exit 1
+# 送達ロジックは deliver_prompt（inject-existing 経路と共通の SSOT）へ委譲する。
+if deliver_prompt "$WINDOW_NAME" "$PROMPT"; then
+    echo "prompt injected → '$WINDOW_NAME'"
+    exit 0
 fi
-
-echo "prompt injected → '$WINDOW_NAME'"
+echo "Error: プロンプトの送達に失敗しました（${CLD_INJECT_ATTEMPTS:-3}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2
+exit 1

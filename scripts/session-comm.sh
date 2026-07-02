@@ -139,6 +139,48 @@ sanitize_text() {
 }
 
 # =============================================================================
+# _resolve_lock_file <target>
+#   SESSION_COMM_LOCK_DIR を検証・作成し、target 用の flock ロックファイルパスを stdout に返す。
+#   cmd_inject（単一行）と cmd_inject_file（複数行）の**共通 SSOT**（un-7nw part2）。
+#   同一 target への並列送信を直列化するロックファイル名を両者で一致させ、inject と inject-file が
+#   同じ pane を同時に触る lost-update も相互に防ぐ（両サブコマンドが同一ロックを掴む）。
+#
+#   バリデーション方針（cmd_inject から移設した既存挙動を byte 等価で保持）:
+#     - 相対パス / '..' を含む → Warning を出し /tmp へフォールバック（exit しない・従来挙動）。
+#     - 絶対パスだが allowlist 外（/tmp・/run/user/<uid> 以外）→ Error + return 1（fail-closed）。
+#       ※ XDG_RUNTIME_DIR は攻撃者制御可能なため allowlist に使わず、id -u で実解決する（#1239）。
+#     - mkdir -p 失敗 → Error + return 1。
+#   返り値: 成功時 0（stdout=ロックファイルパス）／不許可・作成不可時 1（stdout 空）。
+# =============================================================================
+_resolve_lock_file() {
+    local target="$1"
+    local lock_dir="${SESSION_COMM_LOCK_DIR:-/tmp}"
+    if [[ -n "${SESSION_COMM_LOCK_DIR:-}" ]]; then
+        if [[ "${SESSION_COMM_LOCK_DIR}" != /* ]] || [[ "${SESSION_COMM_LOCK_DIR}" =~ \.\. ]]; then
+            echo "Warning: SESSION_COMM_LOCK_DIR '${SESSION_COMM_LOCK_DIR}' is invalid (must be absolute path without '..'), using /tmp" >&2
+            lock_dir="/tmp"
+        else
+            # OWASP A01: allowlist で許可パスを制限（#1239）
+            # /tmp または /run/user/<uid> プレフィックスのみ許可
+            # XDG_RUNTIME_DIR は攻撃者制御可能なため使用しない（環境変数汚染対策）
+            local xdg_runtime="/run/user/$(id -u)"
+            local is_allowed=false
+            [[ "${SESSION_COMM_LOCK_DIR}" == /tmp || "${SESSION_COMM_LOCK_DIR}" == /tmp/* ]] && is_allowed=true
+            [[ "${SESSION_COMM_LOCK_DIR}" == "${xdg_runtime}" || "${SESSION_COMM_LOCK_DIR}" == "${xdg_runtime}/"* ]] && is_allowed=true
+            if ! $is_allowed; then
+                echo "Error: SESSION_COMM_LOCK_DIR '${SESSION_COMM_LOCK_DIR}' is not allowed (allowlist: /tmp, ${xdg_runtime})" >&2
+                return 1
+            fi
+        fi
+    fi
+    mkdir -p "$lock_dir" 2>/dev/null || {
+        echo "Error: lock directory '$lock_dir' (SESSION_COMM_LOCK_DIR) is not creatable" >&2
+        return 1
+    }
+    printf '%s/session-comm-%s.lock' "$lock_dir" "${target//[^a-zA-Z0-9]/-}"
+}
+
+# =============================================================================
 # サブコマンド: capture
 # =============================================================================
 cmd_capture() {
@@ -309,30 +351,9 @@ cmd_inject() {
     done
 
     # flock で排他制御（AC1: 同一 pane への並列送信を直列化）
-    local lock_dir="${SESSION_COMM_LOCK_DIR:-/tmp}"
-    if [[ -n "${SESSION_COMM_LOCK_DIR:-}" ]]; then
-        if [[ "${SESSION_COMM_LOCK_DIR}" != /* ]] || [[ "${SESSION_COMM_LOCK_DIR}" =~ \.\. ]]; then
-            echo "Warning: SESSION_COMM_LOCK_DIR '${SESSION_COMM_LOCK_DIR}' is invalid (must be absolute path without '..'), using /tmp" >&2
-            lock_dir="/tmp"
-        else
-            # OWASP A01: allowlist で許可パスを制限（#1239）
-            # /tmp または /run/user/<uid> プレフィックスのみ許可
-            # XDG_RUNTIME_DIR は攻撃者制御可能なため使用しない（環境変数汚染対策）
-            local xdg_runtime="/run/user/$(id -u)"
-            local is_allowed=false
-            [[ "${SESSION_COMM_LOCK_DIR}" == /tmp || "${SESSION_COMM_LOCK_DIR}" == /tmp/* ]] && is_allowed=true
-            [[ "${SESSION_COMM_LOCK_DIR}" == "${xdg_runtime}" || "${SESSION_COMM_LOCK_DIR}" == "${xdg_runtime}/"* ]] && is_allowed=true
-            if ! $is_allowed; then
-                echo "Error: SESSION_COMM_LOCK_DIR '${SESSION_COMM_LOCK_DIR}' is not allowed (allowlist: /tmp, ${xdg_runtime})" >&2
-                exit 1
-            fi
-        fi
-    fi
-    mkdir -p "$lock_dir" 2>/dev/null || {
-        echo "Error: lock directory '$lock_dir' (SESSION_COMM_LOCK_DIR) is not creatable" >&2
-        exit 1
-    }
-    local lock_file="${lock_dir}/session-comm-${target//[^a-zA-Z0-9]/-}.lock"
+    # lock_dir 検証・作成とロックファイル名導出は _resolve_lock_file（cmd_inject_file と共通の SSOT）に委譲。
+    local lock_file
+    lock_file=$(_resolve_lock_file "$target") || exit 1
     {
         flock -w 30 9 || {
             echo "Error: failed to acquire send lock for '$window_name'" >&2
@@ -471,6 +492,33 @@ cmd_inject_file() {
 
     local target
     target=$(resolve_target "$window_name") || exit 1
+
+    # flock で排他制御（un-7nw part2: 同一 pane への並列 inject-file を直列化して lost-update を防ぐ）。
+    # cmd_inject（単一行）と同じ _resolve_lock_file（SSOT）でロックファイルを導出し、同一 target への
+    # inject / inject-file が同じロックを掴む＝両サブコマンド間の paste 競合も相互に直列化される。
+    #
+    # クリティカルセクションの範囲（重要）: 状態待機（--wait）〜 paste 〜 submit(Enter/追い Enter) 〜
+    # read-back までの**送達全体**をロック下に置く。paste-buffer は共有の入力欄へ書き込み、追い Enter /
+    # read-back 救済 Enter も pane へ Enter を撃つため、これらが別 writer の paste と混線すると
+    # 「片方の Enter が他方の内容を submit する / 部分入力が混ざる」lost-update を起こす。よって送達の
+    # 全 mutation を 1 ロックで囲う。異なる window はロックファイルが別なので相互にブロックしない。
+    #
+    # 待機タイムアウト: クリティカルセクションの保持は最長 wait_timeout + confirm_receipt 秒になりうるため、
+    # 後続 writer がその 1 周期分＋余裕を待てるよう acquire 上限を wait_timeout + confirm_receipt + 30 とする
+    # （両値とも検証済みの非負整数）。超過時は fail-loud（沈黙の取りこぼしを作らない）。
+    #
+    # グループコマンド `{ ...; } 9>"$lock_file"`（cmd_inject と同型）: リダイレクト失敗を非致命に扱える
+    # （exec 9> は非対話 shell で redirection error が即 fatal になりうるため使わない）。fd 9 はグループ終端
+    # またはスクリプト exit で閉じられ、ロックは自動解放される（body 内の exit も同様に解放する）。
+    # body は再インデントせず既存の字下げのまま囲う（差分を送達ロジックの変更に限定し、レビュー可能性を保つ）。
+    local _lock_file
+    _lock_file=$(_resolve_lock_file "$target") || exit 1
+    local _lock_wait=$(( wait_timeout + confirm_receipt + 30 ))
+    {
+    flock -w "$_lock_wait" 9 || {
+        echo "Error: failed to acquire send lock for '$window_name' (waited ${_lock_wait}s)" >&2
+        exit 1
+    }
 
     # 状態チェック: --wait 指定時は input-waiting までアクティブ待機
     if [[ "$wait_timeout" -gt 0 ]]; then
@@ -694,6 +742,7 @@ cmd_inject_file() {
             exit 4
         fi
     fi
+    } 9>"$_lock_file"  # flock クリティカルセクション終端（un-7nw part2）
 }
 
 # =============================================================================

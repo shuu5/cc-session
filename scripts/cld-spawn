@@ -93,6 +93,22 @@ deliver_prompt() {
     $_ok
 }
 
+# _disallowed_reuse_error
+#   --disallowed-tools 指定時に既存 window 再利用が起きた場合の fail-loud メッセージ（reuse 2 箇所で共用）。
+#   既に起動済みの window には封鎖を後付けできない＝黙って未封鎖 window を再利用し exit 0（偽成功）にしない
+#   ための fail-closed（gate round-1 CONFIRMED #3 の修正）。
+_disallowed_reuse_error() {
+    echo "Error: 既存 window '$WINDOW_NAME' には --disallowed-tools を後付けできません（既に起動済み・封鎖が適用されない）。" >&2
+    echo "       封鎖付きで起動するには対象 window を閉じるか、別の --window-name を指定してください。" >&2
+}
+
+# _win_match_count <window>
+#   bare 名指定が全 session 横断で何個の window に一致するかを返す（stdout に件数）。
+#   --inject-existing の曖昧検出用（gate round-1 CONFIRMED #4）。session:… 形式は呼び出し側で対象外にする。
+_win_match_count() {
+    tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -Fxc "$1" || true
+}
+
 # _win_exists <window>
 #   指定 tmux window が存在するか（bare 名 / session:window / session:index の各形式）を判定する。
 #   --inject-existing の事前チェック用。存在で 0、不在で 1。
@@ -161,17 +177,16 @@ while [[ $# -gt 0 ]]; do
             ;;
         --disallowed-tools)
             require_value --disallowed-tools "${2-}"
-            # claude の --disallowed-tools は可変長 <tools...>。値を空白/カンマ区切りで
-            # トークン化し、各ツール名を個別 argv として cld へ渡す（commander variadic が
-            # 確実に配列化する形）。read -ra は glob 展開しないため 'Bash(git:*)' 等の
-            # パターンも安全（unquoted 展開だと * が glob して壊れる）。
-            _dt_arr=()
-            read -ra _dt_arr <<< "${2//,/ }"
-            if [[ "${#_dt_arr[@]}" -eq 0 ]]; then
-                echo "Error: --disallowed-tools に有効なツール名がありません: $2" >&2
-                exit 1
-            fi
-            DISALLOWED_TOOLS+=("${_dt_arr[@]}")
+            # 値は**分割せず verbatim に 1 要素**として蓄える（cld 側で split しない）。
+            # 理由（gate round-1 CONFIRMED fail-open の修正）: claude の --disallowed-tools は 1 argv 内を
+            # **括弧を認識して** space/comma で分割する（例 'Bash(git push:*)' や 'Bash(* --version)' は
+            # 内部空白を含む単一 spec が正典・`claude --help` の例 "Bash(git *) Edit" が示す）。cld 側で
+            # read -ra 等の空白 split を掛けると内部空白を持つ spec が壊れた断片に割れ、claude が非合致 rule
+            # として黙殺 → 意図した block が沈黙して効かない silent fail-open になる（cld は
+            # --dangerously-skip-permissions 起動ゆえ唯一の hard block が失効する重大事象）。よって値は
+            # そのまま 1 argv として透過し、分割は claude に委ねる。複数 spec は 1 つの値に空白/カンマ区切りで
+            # まとめる（claude が分割）か、--disallowed-tools を複数回指定して累積する。
+            DISALLOWED_TOOLS+=("$2")
             shift 2
             ;;
         --inject-existing)
@@ -237,6 +252,16 @@ if [[ -n "$INJECT_EXISTING" ]]; then
     if ! _win_exists "$INJECT_EXISTING"; then
         echo "Error: 既存 window が見つかりません: $INJECT_EXISTING" >&2
         exit 1
+    fi
+    # bare 名（session 非指定）が全 session 横断で複数一致すると、resolve_target が先頭一致で
+    # 意図しない window へ注入し 'prompt injected' と偽成功を返す（#4 修正）。曖昧なら fail-loud で
+    # session:window 形式の明示を促す（session:… 明示時はこのチェックの対象外）。
+    if [[ "$INJECT_EXISTING" != *:* ]]; then
+        _match_n=$(_win_match_count "$INJECT_EXISTING")
+        if [[ "${_match_n:-0}" -gt 1 ]]; then
+            echo "Error: window 名 '$INJECT_EXISTING' が複数 session に一致します（${_match_n}件）。session:window 形式で対象を明示してください。" >&2
+            exit 1
+        fi
     fi
     if deliver_prompt "$INJECT_EXISTING" "$PROMPT"; then
         echo "prompt injected → '$INJECT_EXISTING' (existing)"
@@ -319,6 +344,13 @@ TRAP
 if [[ "$FORCE_NEW" -eq 0 ]]; then
     _EXISTING=$(find_existing_window "$WINDOW_NAME")
     if [[ -n "$_EXISTING" ]]; then
+        # --disallowed-tools は起動時にしか適用できない（既存 window には後付け不可）。
+        # 黙って未封鎖 window を再利用し exit 0（偽成功）にせず fail-loud で止める（#3 fail-open 修正）。
+        if [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]]; then
+            rm -f "$LAUNCHER"
+            _disallowed_reuse_error
+            exit 1
+        fi
         rm -f "$LAUNCHER"
         tmux select-window -t "$_EXISTING"
         echo "reusing existing window: $_EXISTING ($WINDOW_NAME)"
@@ -339,6 +371,12 @@ fi
 if [[ "$FORCE_NEW" -eq 0 ]]; then
     _EXISTING=$(find_existing_window "$WINDOW_NAME")
     if [[ -n "$_EXISTING" ]]; then
+        if [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]]; then
+            exec 200>&-
+            rm -f "$LAUNCHER"
+            _disallowed_reuse_error
+            exit 1
+        fi
         exec 200>&-
         rm -f "$LAUNCHER"
         tmux select-window -t "$_EXISTING"

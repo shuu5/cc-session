@@ -108,6 +108,15 @@ teardown() {
     [[ ! -f "$INJECT_ARGS_FILE" ]] || fail "不在 window なのに inject-file が呼ばれた"
 }
 
+@test "inject-existing: bare 名が複数 session に一致すると曖昧 error・inject しない（#4 修正）" {
+    # EXISTING_WINDOWS に同名を 2 つ → list-windows が 2 行返し曖昧一致（先頭一致誤注入を防ぐ）
+    EXISTING_WINDOWS="target-win target-win" \
+        run bash "$STUB_SCRIPTS/cld-spawn" --inject-existing target-win "hello"
+    [[ "$status" -eq 1 ]] || fail "曖昧 window で exit 1 期待, got $status. $output"
+    [[ "$output" == *"複数 session に一致"* ]] || fail "曖昧エラーが無い: $output"
+    [[ ! -f "$INJECT_ARGS_FILE" ]] || fail "曖昧なのに inject-file が呼ばれた（誤 window 注入の恐れ）"
+}
+
 @test "inject-existing: --model との併用は exit 1（spawn 専用オプション）" {
     EXISTING_WINDOWS="target-win" \
         run bash "$STUB_SCRIPTS/cld-spawn" --inject-existing target-win --model sonnet "hello"

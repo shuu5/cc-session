@@ -75,6 +75,9 @@ Environment:
                                  （既定 3, 0=無効）。複数行 paste が [Pasted text +M lines] に
                                  折りたたまれ既定 Enter が吸収される事象の救済（un-iur）。承認/質問
                                  ダイアログ可視時は modality ガードで送らない。leading-zero 無しの非負整数のみ。
+  SESSION_COMM_LOCK_WAIT         inject / inject-file が同一 pane で共有する flock の acquire 上限秒を
+                                 上書きする（正整数）。既定は inject=90 / inject-file=wait+confirm+30。
+                                 inject-file の長時間送達を待つ単一行 inject の spurious 失敗を調停する。
 EOF
     exit 1
 }
@@ -178,6 +181,23 @@ _resolve_lock_file() {
         return 1
     }
     printf '%s/session-comm-%s.lock' "$lock_dir" "${target//[^a-zA-Z0-9]/-}"
+}
+
+# _lock_wait_for <default>
+#   flock の acquire 上限秒を返す。SESSION_COMM_LOCK_WAIT が設定されていれば（正整数検証して）それを、
+#   無ければ引数の既定値を返す。cmd_inject と cmd_inject_file は同一 target で**共有ロック**を掴むため
+#   （_resolve_lock_file が同名を返す）、片側の長時間ホールド（inject-file は最長 wait_timeout+confirm_receipt
+#   秒保持しうる）を待てる acquire 上限が要る。単一行 inject 側の既定は inject-file の cld-spawn 既定ホールド
+#   （--wait 60 + --confirm-receipt 10 = ~70s）を越える値にする（gate round-1 CONFIRMED #5 の修正）。
+#   両者を SESSION_COMM_LOCK_WAIT で一括調停でき、非整数は fail-closed で弾く。
+_lock_wait_for() {
+    local _default="$1"
+    local _w="${SESSION_COMM_LOCK_WAIT:-$_default}"
+    if ! [[ "$_w" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: SESSION_COMM_LOCK_WAIT requires a positive integer (got '$_w')" >&2
+        return 1
+    fi
+    printf '%s' "$_w"
 }
 
 # =============================================================================
@@ -352,11 +372,16 @@ cmd_inject() {
 
     # flock で排他制御（AC1: 同一 pane への並列送信を直列化）
     # lock_dir 検証・作成とロックファイル名導出は _resolve_lock_file（cmd_inject_file と共通の SSOT）に委譲。
-    local lock_file
+    # acquire 上限（gate round-1 CONFIRMED #5 の修正）: このロックは inject-file と**共有**され、inject-file は
+    # 同一 target を最長 wait_timeout+confirm_receipt 秒（cld-spawn 既定 ~70s）保持しうる。旧 30s では正当な
+    # inject-file 送達中に単一行 inject が spurious に取得失敗したため、既定を 90s（~70s ホールド＋余裕）へ引き上げる。
+    # SESSION_COMM_LOCK_WAIT で inject / inject-file 双方の上限を一括調停できる（非整数は fail-closed）。
+    local lock_file _lock_wait
     lock_file=$(_resolve_lock_file "$target") || exit 1
+    _lock_wait=$(_lock_wait_for 90) || exit 1
     {
-        flock -w 30 9 || {
-            echo "Error: failed to acquire send lock for '$window_name'" >&2
+        flock -w "$_lock_wait" 9 || {
+            echo "Error: failed to acquire send lock for '$window_name' (waited ${_lock_wait}s)" >&2
             exit 1
         }
         if $no_enter; then
@@ -511,9 +536,11 @@ cmd_inject_file() {
     # （exec 9> は非対話 shell で redirection error が即 fatal になりうるため使わない）。fd 9 はグループ終端
     # またはスクリプト exit で閉じられ、ロックは自動解放される（body 内の exit も同様に解放する）。
     # body は再インデントせず既存の字下げのまま囲う（差分を送達ロジックの変更に限定し、レビュー可能性を保つ）。
-    local _lock_file
+    local _lock_file _lock_wait
     _lock_file=$(_resolve_lock_file "$target") || exit 1
-    local _lock_wait=$(( wait_timeout + confirm_receipt + 30 ))
+    # 既定は wait_timeout + confirm_receipt + 30（保持最長＋余裕）。SESSION_COMM_LOCK_WAIT で上書き可
+    # （inject と共通調停・#5 修正）。両値とも検証済みの非負整数のため既定式は安全。
+    _lock_wait=$(_lock_wait_for "$(( wait_timeout + confirm_receipt + 30 ))") || exit 1
     {
     flock -w "$_lock_wait" 9 || {
         echo "Error: failed to acquire send lock for '$window_name' (waited ${_lock_wait}s)" >&2

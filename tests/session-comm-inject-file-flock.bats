@@ -203,3 +203,76 @@ MOCK
         return 1
     }
 }
+
+# ===========================================================================
+# 共有ロックの acquire 上限調停（gate round-1 CONFIRMED #5）
+# ===========================================================================
+
+@test "inject-file-flock[structural]: acquire 上限を _lock_wait_for(SESSION_COMM_LOCK_WAIT)で調停する" {
+    grep -qE '^_lock_wait_for\(\)' "$SCRIPT" || {
+        echo "FAIL: _lock_wait_for ヘルパ定義が無い" >&2; return 1; }
+    # cmd_inject の既定が 30 から引き上げられ、共有ロックの長時間ホールドを待てる
+    grep -q '_lock_wait_for 90' "$SCRIPT" || {
+        echo "FAIL: cmd_inject の acquire 既定 90 (_lock_wait_for 90) が無い" >&2; return 1; }
+    grep -q 'SESSION_COMM_LOCK_WAIT' "$SCRIPT" || {
+        echo "FAIL: SESSION_COMM_LOCK_WAIT 参照が無い" >&2; return 1; }
+}
+
+@test "inject-file-flock[acquire]: SESSION_COMM_LOCK_WAIT が非整数なら fail-closed（exit 1）" {
+    _mock_state_input_waiting
+    mkdir -p "$SANDBOX/bin"
+    cat > "$SANDBOX/bin/tmux" << 'MOCK'
+#!/bin/bash
+case "$1" in
+    -V) echo "tmux 3.4" ;;
+    has-session) exit 0 ;;
+    list-windows) echo "session:0 mock-window" ;;
+    *) exit 0 ;;
+esac
+MOCK
+    chmod +x "$SANDBOX/bin/tmux"
+    local pf="$SANDBOX/p.txt"; printf 'x\n' > "$pf"
+    local ec=0
+    PATH="$SANDBOX/bin:$PATH" _TEST_MODE=1 SESSION_COMM_SCRIPT_DIR="$SANDBOX/mock_scripts" \
+        SESSION_COMM_LOCK_DIR=/tmp SESSION_COMM_LOCK_WAIT=abc \
+        bash "$SCRIPT" inject-file "session:0" "$pf" 2>"$SANDBOX/err.txt" || ec=$?
+    [[ "$ec" -ne 0 ]] || { echo "FAIL: 非整数 SESSION_COMM_LOCK_WAIT で失敗しなかった" >&2; return 1; }
+    grep -q "SESSION_COMM_LOCK_WAIT requires a positive integer" "$SANDBOX/err.txt" || {
+        echo "FAIL: fail-closed メッセージが無い: $(cat "$SANDBOX/err.txt")" >&2; return 1; }
+}
+
+@test "inject-file-flock[acquire]: SESSION_COMM_LOCK_WAIT が acquire 上限を制御する（外部ホルダで検証）" {
+    _mock_state_input_waiting
+    mkdir -p "$SANDBOX/bin"
+    cat > "$SANDBOX/bin/tmux" << 'MOCK'
+#!/bin/bash
+case "$1" in
+    -V) echo "tmux 3.4" ;;
+    has-session) exit 0 ;;
+    list-windows) echo "session:0 mock-window" ;;
+    *) exit 0 ;;
+esac
+MOCK
+    chmod +x "$SANDBOX/bin/tmux"
+
+    # 外部プロセスが共有ロック（/tmp/session-comm-session-0.lock）を 4s 保持
+    local lock="/tmp/session-comm-session-0.lock"
+    ( flock -x 9; sleep 4 ) 9>"$lock" &
+    local holder=$!
+    sleep 0.4  # ホルダがロックを掴むのを待つ
+
+    local start end ec=0
+    start=$(date +%s)
+    PATH="$SANDBOX/bin:$PATH" _TEST_MODE=1 SESSION_COMM_SCRIPT_DIR="$SANDBOX/mock_scripts" \
+        SESSION_COMM_LOCK_DIR=/tmp SESSION_COMM_LOCK_WAIT=1 SESSION_COMM_SUBMIT_ENTER_MAX=0 \
+        bash "$SCRIPT" inject "session:0" "hello" 2>"$SANDBOX/err.txt" || ec=$?
+    end=$(date +%s)
+    kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+
+    [[ "$ec" -ne 0 ]] || { echo "FAIL: ロック保持中に inject が成功（acquire 上限が効いていない）" >&2; return 1; }
+    grep -q "failed to acquire send lock" "$SANDBOX/err.txt" || {
+        echo "FAIL: acquire 失敗メッセージが無い: $(cat "$SANDBOX/err.txt")" >&2; return 1; }
+    # SESSION_COMM_LOCK_WAIT=1 なので ~1s で諦める（ホルダ 4s より十分早い＝上限が効いている）
+    [[ $((end - start)) -le 3 ]] || {
+        echo "FAIL: acquire が SESSION_COMM_LOCK_WAIT=1 を超えて待った: $((end-start))s" >&2; return 1; }
+}

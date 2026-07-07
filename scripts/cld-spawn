@@ -26,6 +26,9 @@ Options:
   --force-new         既存 window を再利用せず必ず新規作成
   --timeout N         inject 待機秒（正の整数・既定: 60）
   --model MODEL       cld に渡す --model
+  --effort LEVEL      cld→claude へ透過する --effort（low|medium|high|xhigh|max）。
+                      値は verbatim 透過＝validate は呼び側の責務（claude 側が fail-loud）。
+                      spawn 起動にのみ有効。
   --disallowed-tools TOOLS
                       cld→claude へ透過する --disallowed-tools（空白/カンマ区切りの
                       ツール名。複数指定で累積）。無人 window で AskUserQuestion 等の
@@ -33,8 +36,8 @@ Options:
   --inject-existing WINDOW
                       spawn せず既存の tmux window へ PROMPT を注入する（inject-file +
                       read-back 受理確認を再利用）。PROMPT 必須。spawn 専用オプション
-                      （--model / --disallowed-tools / --cd / --env-file / --window-name /
-                      --bd-id / --force-new）とは併用不可。
+                      （--model / --effort / --disallowed-tools / --cd / --env-file /
+                      --window-name / --bd-id / --force-new）とは併用不可。
   -h, --help          この usage を表示して終了
 
 PROMPT は positional arg ではなく、起動後に wait-ready + inject-file で送達する。
@@ -130,6 +133,7 @@ BD_ID=""
 FORCE_NEW=0
 WAIT_TIMEOUT=60
 CLD_MODEL=""
+CLD_EFFORT=""         # cld→claude へ透過する --effort（空=未指定＝settings/model 既定に委ねる）
 DISALLOWED_TOOLS=()   # cld→claude へ透過する --disallowed-tools のトークン列（空=未指定）
 INJECT_EXISTING=""    # 非空なら「spawn せず既存 window へ inject」モード（値=対象 window）
 
@@ -173,6 +177,11 @@ while [[ $# -gt 0 ]]; do
         --model)
             require_value --model "${2-}"
             CLD_MODEL="$2"
+            shift 2
+            ;;
+        --effort)
+            require_value --effort "${2-}"
+            CLD_EFFORT="$2"
             shift 2
             ;;
         --disallowed-tools)
@@ -235,6 +244,7 @@ if [[ -n "$INJECT_EXISTING" ]]; then
     # ここで ENV_FILE はまだ raw（--env-file を明示した時のみ非空）＝明示併用のみを検出できる。
     _conflict=""
     [[ -n "$CLD_MODEL" ]] && _conflict+=" --model"
+    [[ -n "$CLD_EFFORT" ]] && _conflict+=" --effort"
     [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]] && _conflict+=" --disallowed-tools"
     $CD_SPECIFIED && _conflict+=" --cd"
     [[ -n "$ENV_FILE" ]] && _conflict+=" --env-file"
@@ -313,6 +323,9 @@ chmod +x "$LAUNCHER"
 _CLD_LINE=$(printf '%q' "${CLD_PATH:-$SCRIPT_DIR/cld}")
 if [[ -n "${CLD_MODEL:-}" ]]; then
     _CLD_LINE+=$(printf ' --model %q' "${CLD_MODEL}")
+fi
+if [[ -n "${CLD_EFFORT:-}" ]]; then
+    _CLD_LINE+=$(printf ' --effort %q' "${CLD_EFFORT}")
 fi
 if [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]]; then
     _CLD_LINE+=' --disallowed-tools'

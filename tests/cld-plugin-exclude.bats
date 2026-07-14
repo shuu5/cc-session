@@ -151,3 +151,28 @@ EOF
     _has_plugin alphabet
     _has_plugin folio
 }
+
+@test "exclude: glob 文字入りの env 値が cwd のファイル名へ展開されない（review 反映）" {
+    # cwd に plugin 名と同名のファイルを置き、'*' が pathname 展開されないことを確認
+    WORKDIR="$SANDBOX/work"
+    mkdir -p "$WORKDIR"
+    touch "$WORKDIR/alpha"
+    cd "$WORKDIR"
+    CLD_PLUGIN_EXCLUDE='*' _run_cld
+    [ "$status" -eq 0 ]
+    # '*' はリテラル扱い＝どの plugin にも一致しない（alpha が cwd 展開で除外されないこと）
+    _has_plugin alpha
+    _has_plugin alphabet
+    _has_plugin folio
+}
+
+@test "exclude: 読取り不可の .cld-exclude で launcher が abort しない（review 反映）" {
+    echo "folio" > "$HOME/.claude/plugins/.cld-exclude"
+    chmod 000 "$HOME/.claude/plugins/.cld-exclude"
+    _run_cld
+    [ "$status" -eq 0 ]
+    # 除外は無効（読めないため）だが claude は起動し、警告が出る
+    _has_plugin folio
+    [[ "$output" == *"読み取れません"* ]]
+    chmod 644 "$HOME/.claude/plugins/.cld-exclude"
+}

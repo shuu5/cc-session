@@ -3,6 +3,8 @@
 #
 # ~/.claude/plugins/ 配下の plugin を自動検出して claude に渡し起動する汎用ランチャー。
 # systemd-run が利用可能ならメモリ制限付き user scope で、なければ直接起動する。
+# 特定 plugin を検出から外すには env CLD_PLUGIN_EXCLUDE（カンマ/空白区切り）または
+# ~/.claude/plugins/.cld-exclude ファイル（1 行 1 名・# コメント可）を使う。
 set -euo pipefail
 
 if ! command -v claude &>/dev/null; then
@@ -14,9 +16,31 @@ PASS_ARGS=("$@")
 
 # ~/.claude/plugins/*/ を自動検出して --plugin-dir で渡す
 PLUGINS_BASE="$HOME/.claude/plugins"
+
+# 除外 denylist: env CLD_PLUGIN_EXCLUDE（カンマ/空白区切り）と $PLUGINS_BASE/.cld-exclude
+# （1 行 1 プラグインディレクトリ名・'#' 以降はコメント・空行可）の合算。basename 完全一致で skip する。
+# 用途: 重量 dev plugin（例: folio の agents ~33KB）を無関係プロジェクトのセッションへ注入しない（un-4v6j）。
+PLUGIN_EXCLUDES=" "
+if [[ -f "$PLUGINS_BASE/.cld-exclude" ]]; then
+    while IFS= read -r _ex_line || [[ -n "$_ex_line" ]]; do
+        _ex_line="${_ex_line%%#*}"
+        _ex_line="${_ex_line//[[:space:]]/}"
+        [[ -n "$_ex_line" ]] && PLUGIN_EXCLUDES+="${_ex_line} "
+    done < "$PLUGINS_BASE/.cld-exclude"
+fi
+_ex_env="${CLD_PLUGIN_EXCLUDE:-}"
+for _ex_tok in ${_ex_env//,/ }; do
+    PLUGIN_EXCLUDES+="${_ex_tok} "
+done
+
 PLUGIN_ARGS=()
 if [[ -d "$PLUGINS_BASE" ]]; then
     for dir in "$PLUGINS_BASE"/*/; do
+        _plug_name="${dir%/}"
+        _plug_name="${_plug_name##*/}"
+        if [[ "$PLUGIN_EXCLUDES" == *" ${_plug_name} "* ]]; then
+            continue
+        fi
         if [[ -f "${dir}.claude-plugin/plugin.json" ]]; then
             PLUGIN_ARGS+=(--plugin-dir "$dir")
         fi

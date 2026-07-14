@@ -224,12 +224,14 @@ spawn_window_name() {
 # 省略時は従来どおり全 session 横断（後方互換）。session は '=' 前置の exact match で解決する
 # （tmux の -t は既定 prefix match のため）。session 不在時はエラーにせず空文字（未発見扱い）。
 find_existing_window() {
-  local name="$1" session="${2:-}"
+  local name="$1" session="${2:-}" out=""
+  # tmux の exit status を pipeline に伝播させない（session 不在で list-windows は exit 1 になる。
+  # 呼び出し元 cld-spawn は set -euo pipefail のため、直結 pipeline だと create-if-absent に
+  # 到達する前に silent 死する——ライブ e2e で実証・ccs-y9h）。出力を先に確保し || で吸収する。
   if [ -n "$session" ]; then
-    tmux list-windows -t "=$session" -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
-      | awk -v n="$name" '$2==n {print $1; exit}'
+    out=$(tmux list-windows -t "=$session" -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null) || out=""
   else
-    tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
-      | awk -v n="$name" '$2==n {print $1; exit}'
+    out=$(tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null) || out=""
   fi
+  printf '%s\n' "$out" | awk -v n="$name" '$2==n {print $1; exit}'
 }

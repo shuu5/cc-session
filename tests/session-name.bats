@@ -296,3 +296,20 @@ EOF
   result=$(find_existing_window "wt-any" "nosuch")
   [ -z "$result" ]
 }
+
+@test "find_existing_window: session 不在でも set -euo pipefail 下で exit 0（silent 死しない・ccs-y9h e2e 実証）" {
+  # tmux スタブ: 不在 session への -t は exit 1（実 tmux 同様）
+  cat > "${STUB_BIN}/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"-t =nosuch"* ]]; then
+  echo "can't find session: nosuch" >&2
+  exit 1
+fi
+EOF
+  chmod +x "${STUB_BIN}/tmux"
+
+  # 呼び出し元（cld-spawn）と同じ set -euo pipefail 環境で実行して exit status を検証する
+  run bash -c "set -euo pipefail; source '$SESSION_NAME_SH'; find_existing_window wt-any nosuch; echo RC-OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RC-OK"* ]]
+}

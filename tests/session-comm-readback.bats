@@ -371,3 +371,43 @@ STATE_EOF
     [ "$status" -eq 4 ]
     [ "$(_enter_count)" -ge 2 ]
 }
+
+@test "boot-race pin: transcript の水平線ペアがあっても残留 corner box を入力欄として扱う（box 誤帰属の封鎖・round-3 反映）" {
+    # Type A（罫線ペア）を無条件優先すると transcript の markdown 水平線を入力欄と誤認し、
+    # 実在の残留 corner box が outside へ漏れて (B) が偽受理する（round-3 review が決定論再現）。
+    # bottom edge がより下の box（=実入力欄）を採用すること。
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE=$'some transcript here\n──────────────────\nmiddle transcript text\n──────────────────\nmore transcript text\n╭──────────────────╮\n│ ❯ hello world │\n╰──────────────────╯'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    [ "$(_enter_count)" -ge 2 ]   # 正しく RESIDUAL → 救済 Enter
+}
+
+@test "boot-race pin: transcript の静的な compaction 語（baseline にも存在）では受理しない（(A) の baseline 行差分・round-3 反映）" {
+    # Summarizing/Restoring は一般英単語＝既存 transcript の出力に居るだけで (A) が発火してはならない。
+    # inject-existing の実流では baseline（paste 前 capture）に同じ transcript が写っている。
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=$'Summarizing the build logs before the change\nmore transcript'
+    export MOCK_PANE=$'Summarizing the build logs before the change\nmore transcript\n╭──────────────────╮\n│ ❯ hello world │\n╰──────────────────╯'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    [ "$(_enter_count)" -ge 2 ]
+}
+
+@test "read-back: Type A（水平罫線ペア）の入力欄でも RESIDUAL を検出する（実 TUI rules モードの pin）" {
+    export MOCK_STATE=input-waiting
+    export MOCK_PANE=$'transcript text\n──────────────────\n❯ hello world\n──────────────────\n  status line'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    [ "$(_enter_count)" -ge 2 ]
+}
+
+@test "read-back: NBSP 入りの空入力欄（Type A）は DELIVERED＝echo-outside-interior 受理が機能する" {
+    # 実 CC の空入力欄は「❯ + NBSP」（sc-6vj）。NBSP を除去して空判定できること。
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE=$'> hello world\n──────────────────\n❯ \xc2\xa0\n──────────────────\n  status line'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]
+}

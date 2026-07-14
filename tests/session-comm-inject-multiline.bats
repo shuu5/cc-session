@@ -229,8 +229,31 @@ STATE_EOF
 @test "read-back 非干渉: 強 processing（正常経路）では救済 Enter を撃たない（回帰なし）" {
     # cld-spawn 正常経路: submit 後すぐ turn 実行（pane に esc to interrupt）。read-back は強 processing
     # マーカー 2 連続で受理＝救済 Enter 0 回（ccs-mxv: state==processing 単独では受理しない——detect_state の
-    # 既定 fallthrough が processing のため。受理は turn 固有マーカーの pane 直読）。
-    export MOCK_PANE=$'✻ Working… (esc to interrupt)\n╭──────────────╮\n│ ❯            │\n╰──────────────╯' 
+    # 既定 fallthrough が processing のため。受理は turn 固有マーカーの pane 直読 + baseline 行差分）。
+    # baseline（paste 前）と poll を出し分ける counter stub（強マーカー行は paste 前には存在しない実流を模す）。
+    export CAP_COUNTER="$SANDBOX/cap_counter"; echo 0 > "$CAP_COUNTER"
+    cat > "$SANDBOX/bin/tmux" <<'TMUX_EOF'
+#!/bin/bash
+echo "$*" >> "$TMUX_CALL_LOG"
+case "$1" in
+    -V) echo "tmux 3.4" ;;
+    has-session) exit 0 ;;
+    display-message) echo "session:0" ;;
+    capture-pane)
+        c=$(cat "$CAP_COUNTER" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$CAP_COUNTER"
+        if [[ "$c" -eq 1 ]]; then
+            printf '%s\n' ""
+        else
+            printf '%s\n' "✻ Working… (esc to interrupt)"
+            printf '%s\n' "╭──────────────╮"
+            printf '%s\n' "│ ❯            │"
+            printf '%s\n' "╰──────────────╯"
+        fi
+        ;;
+    *) exit 0 ;;
+esac
+TMUX_EOF
+    chmod +x "$SANDBOX/bin/tmux"
     export SESSION_COMM_SUBMIT_ENTER_MAX=3
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash

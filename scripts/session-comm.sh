@@ -435,6 +435,11 @@ _rb_extract_input_box() {
     local -a lines=()
     mapfile -t lines
     local n=${#lines[@]} i start=-1 end=-1 bt=-1 bb=-1
+    # Type A 候補（最下部の水平罫線ペア）と Type B 候補（最下部の corner box）を**両方**探し、
+    # 「入力欄は常に pane 最下部の box」という不変条件で bottom edge がより下の候補を採用する。
+    # Type A を無条件優先すると、corner 入力欄の pane で transcript の markdown 水平線ペアを
+    # 入力欄と誤認し、実在の残留 corner box が outside へ漏れて偽受理する（round-3 review
+    # wf_d526dfaa が決定論再現・box 誤帰属の封鎖）。
     local r2=-1 r1=-1
     for ((i = n - 1; i >= 0; i--)); do
         if _rb_is_input_rule "${lines[i]}"; then r2=$i; break; fi
@@ -443,19 +448,31 @@ _rb_extract_input_box() {
         for ((i = r2 - 1; i >= 0; i--)); do
             if _rb_is_input_rule "${lines[i]}"; then r1=$i; break; fi
         done
-        if (( r1 >= 0 )); then start=$((r1 + 1)); end=$((r2 - 1)); bt=$r1; bb=$r2; fi
     fi
-    if (( start < 0 )); then
-        local bot=-1 top=-1
-        for ((i = n - 1; i >= 0; i--)); do
-            case "${lines[i]}" in *"╰"*|*"└"*) bot=$i; break ;; esac
-        done
-        (( bot >= 0 )) || return 4
+    local bot=-1 top=-1
+    for ((i = n - 1; i >= 0; i--)); do
+        case "${lines[i]}" in *"╰"*|*"└"*) bot=$i; break ;; esac
+    done
+    if (( bot >= 0 )); then
         for ((i = bot - 1; i >= 0; i--)); do
             case "${lines[i]}" in *"╭"*|*"┌"*) top=$i; break ;; esac
         done
-        (( top >= 0 )) || return 4
+    fi
+    local a_ok=0 b_ok=0
+    (( r2 >= 0 && r1 >= 0 )) && a_ok=1
+    (( bot >= 0 && top >= 0 )) && b_ok=1
+    if (( a_ok && b_ok )); then
+        if (( bot > r2 )); then
+            start=$((top + 1)); end=$((bot - 1)); bt=$top; bb=$bot
+        else
+            start=$((r1 + 1)); end=$((r2 - 1)); bt=$r1; bb=$r2
+        fi
+    elif (( a_ok )); then
+        start=$((r1 + 1)); end=$((r2 - 1)); bt=$r1; bb=$r2
+    elif (( b_ok )); then
         start=$((top + 1)); end=$((bot - 1)); bt=$top; bb=$bot
+    else
+        return 4
     fi
     if (( outside )); then
         for ((i = 0; i < n; i++)); do
@@ -862,7 +879,7 @@ cmd_inject_file() {
     # processing を観測できないほど高速完了する prompt では false-negative→再送で二重投入の余地が残る
     # （spawn の実タスクでは非現実的・安全側＝silent 消失より二重投入を選ぶ）。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc
+        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
@@ -880,7 +897,22 @@ cmd_inject_file() {
             # (A) 強 processing マーカー 2 連続＝turn 実行中の積極証拠（受理）。
             # interior を特定できないフレーム（boot splash・描画途中）は評価しない（積極証拠にしない。
             # 実 turn は入力欄を常に描画する〔実 TUI 検証済み〕ため正当受理は outside view で成立する）。
-            if [[ "$_rb_xrc" -eq 0 ]] && printf '%s' "$_rb_scan" | grep -qP -- "$_rb_strong_re"; then
+            # baseline 行差分要件（round-3 review wf_d526dfaa）: マッチ行が baseline（paste 前の pane）にも
+            # 逐語で存在する場合は積極証拠にしない——compaction フェーズ名（Summarizing/Restoring）は
+            # 一般英単語で、既存 transcript の静的な出力に居るだけで発火する（inject-existing 経路で
+            # 決定論再現）。実 turn の spinner/status 行は経過秒数等を含み毎 poll 変化する＝baseline と
+            # 逐語一致しないため正当受理は阻害されない。
+            _rb_strong_new=0
+            if [[ "$_rb_xrc" -eq 0 ]]; then
+                while IFS= read -r _rb_sline; do
+                    [[ -z "${_rb_sline//[[:space:]]/}" ]] && continue
+                    if ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sline"; then
+                        _rb_strong_new=1
+                        break
+                    fi
+                done < <(printf '%s' "$_rb_scan" | grep -P -- "$_rb_strong_re" 2>/dev/null || true)
+            fi
+            if [[ "$_rb_strong_new" -eq 1 ]]; then
                 _rb_strong_streak=$(( _rb_strong_streak + 1 ))
                 _rb_vanish_streak=0
                 if [[ "$_rb_strong_streak" -ge 2 ]]; then _rb_ok=true; break; fi

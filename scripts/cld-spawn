@@ -489,11 +489,20 @@ fi
 
 # --- inject-file --wait + read-back でプロンプトを送達（有界リトライ・ccs-ldt） ---
 # 送達ロジックは deliver_prompt（inject-existing 経路と共通の SSOT）へ委譲する。
-# 宛先は session:window 修飾で渡す（bare 名だと resolve_target が全 session 横断の先頭一致で
+# 宛先は原則 session:window 修飾で渡す（bare 名だと resolve_target が全 session 横断の先頭一致で
 # 解決し、別 session の同名 window へ誤送達しうるため。resolve_target は session:window を
 # その session 内で session:index へ解決する＝dot-safe も維持）。
-if deliver_prompt "$TARGET_SESSION:$WINDOW_NAME" "$PROMPT"; then
-    echo "prompt injected → '$TARGET_SESSION:$WINDOW_NAME'"
+# 例外: --session 省略時に解決した現在 session 名が送達層（resolve_target）の allowlist 外の
+# 文字（tmux 的には合法な '+' '@' '%' 等）を含む場合は bare 名送達へフォールバックする。
+# 修飾すると送達層が session 部を reject し「window は生成済みなのに偽失敗 exit 1」の回帰になる
+# （--session 明示値は parse 時 validate 済みで必ず修飾送達になる）。
+_DELIVER_TGT="$TARGET_SESSION:$WINDOW_NAME"
+if [[ ! "$TARGET_SESSION" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    _DELIVER_TGT="$WINDOW_NAME"
+    echo "Warning: 現在の session 名 '$TARGET_SESSION' は送達修飾の安全文字集合外のため bare window 名で送達します（複数 session に同名 window がある場合は誤送達の可能性）" >&2
+fi
+if deliver_prompt "$_DELIVER_TGT" "$PROMPT"; then
+    echo "prompt injected → '$_DELIVER_TGT'"
     exit 0
 fi
 echo "Error: プロンプトの送達に失敗しました（${CLD_INJECT_ATTEMPTS:-3}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2

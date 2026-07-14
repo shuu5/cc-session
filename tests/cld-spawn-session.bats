@@ -90,9 +90,10 @@ SESSION_STUB
     mkdir -p "$STUB_SCRIPTS/lib"
     cp "$SCRIPT_DIR/lib/session-env.sh" "$STUB_SCRIPTS/lib/session-env.sh"
 
-    # session-comm.sh: inject-file 呼び出しを無効化
+    # session-comm.sh: 呼び出し引数（送達 target 含む）を記録して成功を返す
     cat > "$STUB_SCRIPTS/session-comm.sh" <<'COMM_STUB'
 #!/bin/bash
+echo "COMM:$*" >> "$TMUX_LOG"
 exit 0
 COMM_STUB
     chmod +x "$STUB_SCRIPTS/session-comm.sh"
@@ -216,4 +217,39 @@ _run_spawn() {
     _run_spawn --session ""
     [ "$status" -ne 0 ]
     [[ "$output" == *"値を指定してください"* ]]
+}
+
+# --- プロンプト送達の session 修飾（受入基準(5) の gating・review 反映） ---
+
+@test "session: --session 指定時の送達 target は session:window 修飾される" {
+    export EXISTING_SESSIONS="proj"
+    _run_spawn --session proj -- "hello"
+    [ "$status" -eq 0 ]
+    grep -q "COMM:inject-file proj:cld-spawn-test" "$TMUX_LOG" \
+        || { echo "log: $(cat "$TMUX_LOG")"; false; }
+    [[ "$output" == *"prompt injected → 'proj:cld-spawn-test'"* ]]
+}
+
+@test "session: --session 省略時も現在 session で修飾送達される" {
+    export EXISTING_SESSIONS="cursess"
+    export CURRENT_SESSION_STUB="cursess"
+    _run_spawn -- "hello"
+    [ "$status" -eq 0 ]
+    grep -q "COMM:inject-file cursess:cld-spawn-test" "$TMUX_LOG" \
+        || { echo "log: $(cat "$TMUX_LOG")"; false; }
+    [[ "$output" == *"prompt injected → 'cursess:cld-spawn-test'"* ]]
+}
+
+@test "session: 現在 session 名が送達 allowlist 外なら bare 名送達へフォールバック（偽失敗回帰の防止）" {
+    # 'user@host' は tmux 的に合法だが resolve_target の session allowlist 外
+    export EXISTING_SESSIONS="user@host"
+    export CURRENT_SESSION_STUB="user@host"
+    _run_spawn -- "hello"
+    [ "$status" -eq 0 ]
+    # 修飾せず bare window 名で送達される（session 修飾だと送達層が reject し偽失敗になる）
+    grep -q "COMM:inject-file cld-spawn-test" "$TMUX_LOG" \
+        || { echo "log: $(cat "$TMUX_LOG")"; false; }
+    ! grep -q "COMM:inject-file user@host:cld-spawn-test" "$TMUX_LOG"
+    [[ "$output" == *"prompt injected → 'cld-spawn-test'"* ]]
+    [[ "$output" == *"安全文字集合外"* ]]
 }

@@ -612,14 +612,18 @@ cmd_inject_file() {
 
     # 強 processing マーカー（ccs-mxv）: detect_state の既定 fallthrough は processing（パターン不在の
     # 残余クラス）のため、state==processing は「turn 実行中」の積極証拠にならない（boot splash も
-    # processing と読める）。read-back の受理判定には pane 直読の強マーカー（esc to interrupt /
-    # thinking 進行形 / compaction フェーズ名）のみを使う。SSOT は session-state.sh（同 SSOT を
-    # subshell source する流儀は上の _se_dialog_re と同一・失敗時は既知良好リテラルへ fail-closed）。
+    # processing と読める）。受理に使えるのは **turn 固有**のマーカーのみ:
+    #   - esc to interrupt（実行中 turn の中断 UI・boot では出ない）
+    #   - compaction フェーズ名（COMPACTION_INDICATORS・SSOT=session-state.sh 経由）
+    # THINKING_PROGRESS_PATTERN は**使わない**——英語進行形+省略記号の汎用形は boot スピナー語彙
+    # （Loading…/Starting…/Initializing…/Connecting…/Baking… 等）にも一致し、boot 中に 2 連続で
+    # 偽成立して RESIDUAL 分岐へ到達する前に偽受理する（live e2e で実測再現・ccs-mxv）。
+    # scribe sc-8g5 が busy-regex の再利用を拒否した判断と同根。
+    # SSOT を subshell source する流儀は上の _se_dialog_re と同一・失敗時は既知良好リテラルへ fail-closed。
     local _rb_strong_re=''
     _rb_strong_re=$(
         source "${SCRIPT_DIR}/session-state.sh" 2>/dev/null || exit 0
         _p="esc to interrupt"
-        [[ -n "${THINKING_PROGRESS_PATTERN:-}" ]] && _p="${_p}|${THINKING_PROGRESS_PATTERN}"
         if [[ -n "${COMPACTION_INDICATORS+x}" ]] && [[ "${#COMPACTION_INDICATORS[@]}" -gt 0 ]]; then
             IFS='|'
             _p="${_p}|${COMPACTION_INDICATORS[*]}"
@@ -825,9 +829,10 @@ cmd_inject_file() {
     # pane 出現も「到着」しか証明せず「submit（turn 開始）」を証明しない——boot 中の promo/TUI 再描画が
     # 初回 Enter を食うと、入力欄残留や一過性フレームの sentinel で偽『受理』を返し、spawn kickoff が
     # silent 消失する（orch-sm6p/sc-8g5 verified・orch-ttqe の根治対象）。受理は submit の積極証拠のみ:
-    #   (A) 強 processing 2 連続: pane 直読で esc to interrupt / thinking 進行形 / compaction フェーズ名
-    #       （SSOT=session-state.sh）を 2 連続観測＝turn 実行中。state==processing は使わない（detect_state
+    #   (A) 強 processing 2 連続: pane 直読で turn 固有マーカー（esc to interrupt / compaction フェーズ名・
+    #       SSOT=session-state.sh）を 2 連続観測＝turn 実行中。state==processing は使わない（detect_state
     #       の既定 fallthrough が processing のため splash 滞留も processing と読める＝弱い証拠）。
+    #       thinking 進行形 pattern も使わない（boot スピナー語彙と同形＝e2e で偽受理を実測・下の導出部参照）。
     #   (B) echo-outside-interior: sentinel が入力欄 interior の**外**（transcript）に出現 ∧ baseline に
     #       不在＝submit されて会話履歴に載った証拠。fast-complete / post-submit ダイアログの
     #       false-negative（→再送二重投入）を防ぐ。

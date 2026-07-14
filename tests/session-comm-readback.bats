@@ -307,3 +307,20 @@ STATE_EOF
     [ "$status" -eq 0 ]
     grep -qE 'paste-buffer' "$TMUX_CALL_LOG"
 }
+
+@test "boot-race pin: boot スピナー語彙（Loading…）では受理しない（強マーカーは turn 固有限定・e2e 実測反映）" {
+    # THINKING_PROGRESS_PATTERN（英語進行形+…）は boot スピナー（Loading…/Starting…/Baking… 等）にも
+    # 一致するため受理条件に使えない。boot 中の 2 連続偽成立で RESIDUAL 分岐に到達する前に偽受理し、
+    # spawn kickoff が silent 消失する（live e2e で再現）。turn 固有の esc to interrupt / compaction のみ許す。
+    export MOCK_STATE=processing
+    export MOCK_PANE="Loading…"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+}
+
+@test "boot-race pin: Baking…/Initializing… 等の boot 語彙でも受理しない" {
+    export MOCK_STATE=processing
+    export MOCK_PANE=$'Baking…\nInitializing…'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+}

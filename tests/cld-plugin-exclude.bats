@@ -173,6 +173,26 @@ EOF
     [ "$status" -eq 0 ]
     # 除外は無効（読めないため）だが claude は起動し、警告が出る
     _has_plugin folio
-    [[ "$output" == *"読み取れません"* ]]
+    [[ "$output" == *"plugin 除外は無効"* ]]
     chmod 644 "$HOME/.claude/plugins/.cld-exclude"
+}
+
+@test "exclude: .cld-exclude がディレクトリでも launcher が abort しない（round-2 反映）" {
+    rm -f "$HOME/.claude/plugins/.cld-exclude"
+    mkdir -p "$HOME/.claude/plugins/.cld-exclude"
+    _run_cld
+    [ "$status" -eq 0 ]
+    _has_plugin alpha
+    _has_plugin folio
+    [[ "$output" == *"正規ファイルでない"* ]]
+}
+
+@test "exclude: .cld-exclude が FIFO でも launcher が hang/abort しない（round-2 反映）" {
+    rm -rf "$HOME/.claude/plugins/.cld-exclude"
+    mkfifo "$HOME/.claude/plugins/.cld-exclude"
+    # FIFO を read すると writer 待ちで hang するため、timeout で hang しないことも保証する
+    run timeout 5 bash "$CLD"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/.claude/plugins/folio/"* ]]
+    [[ "$output" == *"正規ファイルでない"* ]]
 }

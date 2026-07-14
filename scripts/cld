@@ -21,16 +21,18 @@ PLUGINS_BASE="$HOME/.claude/plugins"
 # （1 行 1 プラグインディレクトリ名・'#' 以降はコメント・空行可）の合算。basename 完全一致で skip する。
 # 用途: 重量 dev plugin（例: folio の agents ~33KB）を無関係プロジェクトのセッションへ注入しない（un-4v6j）。
 PLUGIN_EXCLUDES=" "
-# -r で判定する（-f だと「存在するが読取り不可」で set -e × リダイレクト失敗により launcher 全体が
-# abort し claude が起動しなくなる）。読めない場合は警告して除外なしで続行する。
-if [[ -r "$PLUGINS_BASE/.cld-exclude" ]]; then
+# -f かつ -r で判定する（-f のみだと「正規ファイルだが読取り不可」でリダイレクト失敗により
+# launcher 全体が abort、-r のみだと「読取り可能なディレクトリ」で EISDIR abort・FIFO で hang）。
+# 正規ファイルで読める場合のみ読み、それ以外の存在物は警告して除外なしで続行する
+# （不変条件: .cld-exclude が何であれ claude の起動は妨げない）。
+if [[ -f "$PLUGINS_BASE/.cld-exclude" && -r "$PLUGINS_BASE/.cld-exclude" ]]; then
     while IFS= read -r _ex_line || [[ -n "$_ex_line" ]]; do
         _ex_line="${_ex_line%%#*}"
         _ex_line="${_ex_line//[[:space:]]/}"
         [[ -n "$_ex_line" ]] && PLUGIN_EXCLUDES+="${_ex_line} "
     done < "$PLUGINS_BASE/.cld-exclude"
 elif [[ -e "$PLUGINS_BASE/.cld-exclude" ]]; then
-    echo "Warning: $PLUGINS_BASE/.cld-exclude を読み取れません（plugin 除外は無効のまま起動します）" >&2
+    echo "Warning: $PLUGINS_BASE/.cld-exclude が読取り可能な正規ファイルでないため無視します（plugin 除外は無効のまま起動します）" >&2
 fi
 # env は read -a で配列化する（unquoted 展開だと glob 文字入りの値が cwd のファイル名へ
 # pathname 展開され denylist が汚染される）。IFS でカンマ/空白の両区切りを受ける。

@@ -474,8 +474,9 @@ _rb_extract_input_box() {
 
 # _rb_classify_interior <interior> <head_sentinel> <tail_marker> — 入力欄 interior の 3 値分類。
 #   return 3 = RESIDUAL（我々の注入テキスト or paste placeholder が入力欄に居る＝「未 submit」の積極証明。
-#              救済 Enter の唯一の発火条件・DJ-b。RESIDUAL とダイアログ表示は排他——ダイアログは
-#              interior を占め marker 不在→INCONCLUSIVE になる——ため dialog modality ガードを内包する）
+#              救済 Enter の唯一の発火条件・DJ-b。RESIDUAL とダイアログ表示は**原則**排他——ダイアログは
+#              interior を占め marker 不在→INCONCLUSIVE になる——が、ダイアログ文言が marker 断片を
+#              偶発包含する衝突があるため、呼出側は dialog modality ガードを belt で併用すること）
 #   return 0 = DELIVERED（interior 空＝入力欄クリア）
 #   return 2 = INCONCLUSIVE（帰属不能な非空内容＝ダイアログ/他者入力。受理も Enter もしない）
 _rb_classify_interior() {
@@ -839,8 +840,8 @@ cmd_inject_file() {
     # 非受理側:
     #   - RESIDUAL（interior に head sentinel / tail marker / paste placeholder）＝「未 submit」の積極証明
     #     → 有界（_se_max）の救済 Enter で submit を flush（un-iur の折りたたみ吸収救済を包含）。
-    #     Enter は RESIDUAL のときだけ撃つ（DJ-b）。RESIDUAL とダイアログは排他（ダイアログは interior を
-    #     占め INCONCLUSIVE になる）ため、この RESIDUAL-gate は旧 dialog modality ガードを subsume する。
+    #     Enter は RESIDUAL のときだけ撃つ（DJ-b）。RESIDUAL とダイアログは**原則**排他だが、ダイアログ
+    #     文言が marker 断片を偶発包含すると誤分類しうるため、_se_dialog_re の modality ガードを belt で併用。
     #   - INCONCLUSIVE（帰属不能な interior / interior 抽出不能）＝判定保留（受理も Enter もしない）。
     #   - vanished（interior 空 ∧ sentinel が pane 全体に不在）2 連続＝paste が boot 再描画で飲まれた
     #     → 早期 fail（budget を待たず exit 4）→ 呼出側（cld-spawn）が --clear-first で再送。
@@ -879,9 +880,15 @@ cmd_inject_file() {
                         _rb_cls=0
                         _rb_classify_interior "$_rb_interior" "$_rb_sentinel" "$_rb_tail_marker" || _rb_cls=$?
                         case "$_rb_cls" in
-                            3)  # RESIDUAL: 未 submit の積極証明 → 有界の救済 Enter（DJ-b・唯一の Enter 発火条件）
+                            3)  # RESIDUAL: 未 submit の積極証明 → 有界の救済 Enter（DJ-b・唯一の Enter 発火条件）。
+                                # belt: dialog パターンが pane に可視なら RESIDUAL 判定でも撃たない——RESIDUAL と
+                                # ダイアログは原則排他（ダイアログは interior を占め INCONCLUSIVE になる）だが、
+                                # ダイアログ文言が prompt の 8-24 字断片を偶発包含すると marker 一致で RESIDUAL に
+                                # 誤分類されうる（review wf_618b9ea7 が決定論再現・既定選択の確定＝fail-open）。
+                                # 抑止時は budget 失効 → 呼出側再送に委ねる（旧実装の modality ガードを復帰）。
                                 _rb_vanish_streak=0
-                                if [[ "$_rb_resub" -lt "$_se_max" ]]; then
+                                if [[ "$_rb_resub" -lt "$_se_max" ]] \
+                                   && ! printf '%s' "$_rb_pane" | grep -qE -- "$_se_dialog_re"; then
                                     session_msg send "$target" "" --enter-only
                                     ((_rb_resub++)) || true
                                 fi

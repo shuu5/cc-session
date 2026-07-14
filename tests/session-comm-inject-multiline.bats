@@ -135,12 +135,13 @@ STATE_EOF
     [ "$n" -eq 2 ]
 }
 
-@test "read-back 救済 (un-iur finding#2): --confirm-receipt 経路の決定論的 input-waiting 滞留にも救済 Enter を撃つ" {
+@test "read-back 救済 (un-iur finding#2): 折りたたみ placeholder の RESIDUAL 滞留に救済 Enter を撃つ" {
     # cld-spawn の初期 inject は常に --confirm-receipt 経由（confirm_receipt>0）。決定論的な折りたたみ吸収
     # （初回 Enter は常に吸収・state は input-waiting 滞留）だと、read-back の再 paste リトライ（paste+単発
-    # Enter）も同じく吸収され送達失敗しうる。修正後は read-back ループ内で input-waiting（=未 submit）を見たら
-    # 有界（SESSION_COMM_SUBMIT_ENTER_MAX）の救済 Enter を撃つ。dialog 不可視（素入力欄）なので救済する。
-    export MOCK_PANE=""
+    # Enter）も同じく吸収され送達失敗しうる。read-back ループは入力欄 interior に折りたたみ placeholder を
+    # 確認（RESIDUAL＝未 submit の積極証明・ccs-mxv で positive-proof 化）したら有界
+    # （SESSION_COMM_SUBMIT_ENTER_MAX）の救済 Enter を撃つ。dialog 不可視なので救済する。
+    export MOCK_PANE=$'╭──────────────╮\n│ ❯ [Pasted text #1 +25 lines] │\n╰──────────────╯'
     export SESSION_COMM_SUBMIT_ENTER_MAX=2     # 救済 Enter を 2 回で有界化（budget 内に複数 poll が回る）
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash
@@ -178,9 +179,12 @@ STATE_EOF
     [ "$n" -eq 1 ]
 }
 
-@test "read-back 救済: sentinel 可視（受理）なら救済 Enter を撃たず exit 0（二重 submit 回避）" {
-    # 折りたたみが解けて prompt 内容(sentinel)が画面に出た＝受理。救済 Enter を撃つ前に持続シグナルで break。
-    # capture-pane は baseline（1 回目=空）と poll（2 回目以降=sentinel 可視）を出し分ける（差分検証のため）。
+@test "read-back 救済: echo-outside-interior（受理）なら救済 Enter を撃たず exit 0（二重 submit 回避）" {
+    # 折りたたみが解けて prompt 内容(sentinel)が transcript（入力欄 interior の外）に echo され、入力欄が
+    # 空＝submit の積極証拠（ccs-mxv・B 経路）。救済 Enter を撃つ前に受理で break。
+    # capture-pane は baseline（1 回目=空）と poll（2 回目以降=echo+空入力欄）を出し分ける（差分検証のため）。
+    # 注: 生テキストの sentinel 出現だけ（入力欄 box 無し）では受理しない——到着 ≠ submit（boot-race 偽陽性の
+    # 根治・その pin は session-comm-readback.bats 側）。
     export CAP_COUNTER="$SANDBOX/cap_counter"; echo 0 > "$CAP_COUNTER"
     cat > "$SANDBOX/bin/tmux" <<'TMUX_EOF'
 #!/bin/bash
@@ -191,7 +195,14 @@ case "$1" in
     display-message) echo "session:0" ;;
     capture-pane)
         c=$(cat "$CAP_COUNTER" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$CAP_COUNTER"
-        if [[ "$c" -eq 1 ]]; then printf '%s\n' ""; else printf '%s\n' "first prompt line here echoed"; fi  # poll で sentinel 出現
+        if [[ "$c" -eq 1 ]]; then
+            printf '%s\n' ""
+        else
+            printf '%s\n' "> first prompt line here echoed"   # transcript echo
+            printf '%s\n' "╭──────────────╮"
+            printf '%s\n' "│ ❯            │"                   # 入力欄は空（DELIVERED）
+            printf '%s\n' "╰──────────────╯"
+        fi
         ;;
     *) exit 0 ;;
 esac
@@ -209,15 +220,17 @@ STATE_EOF
     chmod +x "$SANDBOX/mock_scripts/session-state.sh"
 
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
-    [ "$status" -eq 0 ]                        # 持続シグナル(sentinel='first prompt line her' が baseline 差分で出現)で受理
+    [ "$status" -eq 0 ]                        # echo-outside-interior（B）で受理
     # 初回 Enter 1 回のみ。受理を先に検知するため救済 Enter は 0 回。
     local n; n=$(_count_enters)
     [ "$n" -eq 1 ]
 }
 
-@test "read-back 非干渉: processing 遷移（正常経路）では救済 Enter を撃たない（回帰なし）" {
-    # cld-spawn 正常経路: submit 後すぐ processing。read-back は processing 2 連続で受理＝救済 Enter 0 回。
-    export MOCK_PANE=""
+@test "read-back 非干渉: 強 processing（正常経路）では救済 Enter を撃たない（回帰なし）" {
+    # cld-spawn 正常経路: submit 後すぐ turn 実行（pane に esc to interrupt）。read-back は強 processing
+    # マーカー 2 連続で受理＝救済 Enter 0 回（ccs-mxv: state==processing 単独では受理しない——detect_state の
+    # 既定 fallthrough が processing のため。受理は turn 固有マーカーの pane 直読）。
+    export MOCK_PANE="✻ Working… (esc to interrupt)"
     export SESSION_COMM_SUBMIT_ENTER_MAX=3
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash
@@ -228,8 +241,8 @@ STATE_EOF
     chmod +x "$SANDBOX/mock_scripts/session-state.sh"
 
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
-    [ "$status" -eq 0 ]                        # processing 2 連続で受理
-    # 初回 Enter 1 回のみ（input-waiting でないので救済 Enter は 0 回＝回帰なし）。
+    [ "$status" -eq 0 ]                        # 強 processing 2 連続で受理
+    # 初回 Enter 1 回のみ（救済 Enter は 0 回＝回帰なし）。
     local n; n=$(_count_enters)
     [ "$n" -eq 1 ]
 }

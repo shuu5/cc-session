@@ -324,3 +324,14 @@ STATE_EOF
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
     [ "$status" -eq 4 ]
 }
+
+@test "boot-race pin: ダイアログ文言が marker 断片を偶発包含しても救済 Enter を撃たない（dialog ガード belt・review 反映）" {
+    # tail marker（prompt 末尾 24 字）がダイアログ文言に部分一致すると RESIDUAL に誤分類されうる。
+    # その場合でも _se_dialog_re ガード（belt）が救済 Enter を抑止する（既定選択の確定＝fail-open 防止）。
+    export MOCK_STATE=input-waiting
+    export MOCK_PANE=$'╭──────────────╮\n│ Do you want to hello world? 1. Yes 2. No │\n╰──────────────╯'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    # 初回 Enter 1 回のみ（RESIDUAL 誤分類でも dialog 可視なら救済 Enter 0 回）
+    [ "$(_enter_count)" -eq 1 ]
+}

@@ -20,6 +20,9 @@ COMM="$SCRIPT_DIR/session-comm.sh"
 
 # 強 processing マーカー（session-state.sh SSOT の一部・テストでは literal で使用）
 STRONG="✻ Churning… (esc to interrupt)"
+# 実 turn の pane（強マーカー + 入力欄 box。(A) は入力欄 interior を特定できたフレームの
+# outside view のみで評価するため、受理には box の存在が必要——実 TUI は turn 中も常に描画する）
+STRONG_PANE=$'✻ Churning… (esc to interrupt)\n╭──────────────╮\n│ ❯            │\n╰──────────────╯' 
 # 空の入力欄 box（interior は ❯ のみ＝DELIVERED）
 EMPTY_BOX=$'╭──────────────╮\n│ ❯            │\n╰──────────────╯'
 # prompt（hello world）が残留した入力欄 box（interior に sentinel＝RESIDUAL）
@@ -90,7 +93,7 @@ _enter_count() {
 
 @test "read-back: 強 processing マーカー 2 連続で受理＝exit 0（A）" {
     export MOCK_STATE=input-waiting            # state 経路は使わない（pane 直読で受理）
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 0 ]
 }
@@ -106,7 +109,7 @@ _enter_count() {
 @test "read-back: 単発 error は即 break せず、後続の強 processing で受理＝exit 0（ccs-e0i item3）" {
     export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
     export MOCK_PANE="noise"
-    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG"
+    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG_PANE"
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash
 if [[ "$1" == "wait" ]]; then exit 0; fi
@@ -124,7 +127,7 @@ STATE_EOF
 @test "read-back: 単発 exited も即 break せず、後続の強 processing で受理＝exit 0（ccs-e0i item3）" {
     export STATE_COUNTER="$SANDBOX/state_counter"; echo 0 > "$STATE_COUNTER"
     export MOCK_PANE="noise"
-    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG"
+    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG_PANE"
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash
 if [[ "$1" == "wait" ]]; then exit 0; fi
@@ -167,7 +170,7 @@ STATE_EOF
 @test "boot-race pin: 残留 → 救済 Enter → 強 processing で回復受理＝exit 0" {
     export MOCK_STATE=input-waiting
     export MOCK_PANE="$RESIDUAL_BOX"
-    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG"
+    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 5
     [ "$status" -eq 0 ]
     [ "$(_enter_count)" -ge 2 ]
@@ -199,7 +202,7 @@ STATE_EOF
 @test "read-back: 折りたたみ placeholder は RESIDUAL 扱い＝救済 Enter → 強 processing で受理（un-iur 保持）" {
     export MOCK_STATE=input-waiting
     export MOCK_PANE=$'╭──────────────╮\n│ ❯ [Pasted text #1 +25 lines] │\n╰──────────────╯'
-    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG"
+    export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 5
     [ "$status" -eq 0 ]
     [ "$(_enter_count)" -ge 2 ]
@@ -221,7 +224,7 @@ STATE_EOF
 
 @test "read-back: 強 processing 単発では受理しない（2 連続要求で flicker を除去）" {
     export MOCK_STATE=input-waiting
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     export MOCK_PANE_AFTER_N=3; export MOCK_PANE_AFTER="noise"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
     [ "$status" -eq 4 ]
@@ -231,7 +234,7 @@ STATE_EOF
     # 強マーカーが交互にしか見えない（strong→noise→strong→…）場合、非連続の lone 観測を
     # 「2 連続」と誤計上して受理する fail-open を封じる（streak リセットの mutation 検出）。
     export MOCK_STATE=input-waiting
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     export MOCK_PANE_ALT="noise"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
     [ "$status" -eq 4 ]
@@ -267,14 +270,14 @@ STATE_EOF
 }
 
 @test "clear-first: paste 前に C-u（send-keys）を送る" {
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3 --clear-first
     [ "$status" -eq 0 ]
     grep -qE 'send-keys.*C-u' "$TMUX_CALL_LOG"
 }
 
 @test "clear-first 未指定なら C-u を送らない（既定）" {
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 0 ]
     ! grep -qE 'send-keys.*C-u' "$TMUX_CALL_LOG"
@@ -294,7 +297,7 @@ STATE_EOF
 
 @test "read-back: 空白のみ prompt でも sentinel 導出で abort しない（paste まで到達・回帰）" {
     printf '   \n\t\n' > "$PROMPT_FILE"
-    export MOCK_PANE="$STRONG"               # 受理は強マーカー経由（sentinel は空で無効）
+    export MOCK_PANE="$STRONG_PANE"          # 受理は強マーカー経由（sentinel は空で無効）
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 0 ]
     grep -qE 'paste-buffer' "$TMUX_CALL_LOG"
@@ -302,7 +305,7 @@ STATE_EOF
 
 @test "read-back: 完全空 prompt でも abort しない（grep no-match の set -e 回帰）" {
     : > "$PROMPT_FILE"
-    export MOCK_PANE="$STRONG"
+    export MOCK_PANE="$STRONG_PANE"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 0 ]
     grep -qE 'paste-buffer' "$TMUX_CALL_LOG"
@@ -334,4 +337,37 @@ STATE_EOF
     [ "$status" -eq 4 ]
     # 初回 Enter 1 回のみ（RESIDUAL 誤分類でも dialog 可視なら救済 Enter 0 回）
     [ "$(_enter_count)" -eq 1 ]
+}
+
+@test "boot-race pin: prompt 本文が強マーカー語を含んでも入力欄残留で受理しない（(A) の interior 除外・round-2 反映）" {
+    # (A) を pane 全体で grep すると、prompt 本文の 'Summarizing' 等が未 submit の入力欄残留に
+    # ヒットして偽受理する（round-2 review wf_58b5c18e が決定論再現）。(A) は outside view のみを見る。
+    printf 'Summarizing logs from the build\n' > "$PROMPT_FILE"
+    export MOCK_STATE=input-waiting
+    export MOCK_PANE=$'╭──────────────╮\n│ ❯ Summarizing logs from the build │\n╰──────────────╯'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    # RESIDUAL として救済 Enter は撃たれる（受理はしない）
+    [ "$(_enter_count)" -ge 2 ]
+}
+
+@test "boot-race pin: interior 不特定のフレームでは強マーカー語が見えても受理しない（(A) は box 特定が前提）" {
+    # boot splash 等で入力欄 box が無いフレームは、生テキストに強マーカー語が見えても積極証拠にしない
+    # （入力欄残留と transcript の区別がつかないため）。
+    printf 'Summarizing logs from the build\n' > "$PROMPT_FILE"
+    export MOCK_STATE=input-waiting
+    export MOCK_PANE="Summarizing logs from the build"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+}
+
+@test "read-back: 長文で head が隠れ tail のみ入力欄に可視でも RESIDUAL 検出→救済 Enter（tail marker pin・round-2 反映）" {
+    # tail marker（最終非空行の末尾 24 字）の存在意義: 長文 prompt で head（先頭 24 字）が入力欄から
+    # 隠れ、cursor が座る tail のみ可視な残留。head 不在・tail 一致で RESIDUAL を検出できること。
+    printf 'alpha first line of the long prompt\nmiddle line\nzz-tail-unique-suffix-9\n' > "$PROMPT_FILE"
+    export MOCK_STATE=input-waiting
+    export MOCK_PANE=$'╭──────────────╮\n│ ❯ zz-tail-unique-suffix-9 │\n╰──────────────╯'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    [ "$(_enter_count)" -ge 2 ]
 }

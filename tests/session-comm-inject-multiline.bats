@@ -230,7 +230,7 @@ STATE_EOF
     # cld-spawn 正常経路: submit 後すぐ turn 実行（pane に esc to interrupt）。read-back は強 processing
     # マーカー 2 連続で受理＝救済 Enter 0 回（ccs-mxv: state==processing 単独では受理しない——detect_state の
     # 既定 fallthrough が processing のため。受理は turn 固有マーカーの pane 直読）。
-    export MOCK_PANE="✻ Working… (esc to interrupt)"
+    export MOCK_PANE=$'✻ Working… (esc to interrupt)\n╭──────────────╮\n│ ❯            │\n╰──────────────╯' 
     export SESSION_COMM_SUBMIT_ENTER_MAX=3
     cat > "$SANDBOX/mock_scripts/session-state.sh" <<'STATE_EOF'
 #!/bin/bash

@@ -424,13 +424,17 @@ _rb_is_input_rule() {
     return 1
 }
 
-# _rb_extract_input_box — stdin の pane capture から入力欄 interior を抽出して stdout へ。
+# _rb_extract_input_box [--outside] — stdin の pane capture から入力欄 interior（既定）を抽出して
+#   stdout へ。--outside は逆に **入力欄（枠含む）を除いた残り**（transcript/status 領域）を出す
+#   （(A)/(B) の受理判定はこの outside view に対して行う＝入力欄残留の内容を積極証拠に混ぜない）。
 #   Type A: 最下部の水平罫線ペア / Type B: 最下部の corner box（╰/└ → 直上の ╭/┌）。
 #   見つからなければ exit 4（interior 不明＝呼出側は INCONCLUSIVE 扱い・受理も Enter もしない）。
 _rb_extract_input_box() {
+    local outside=0
+    [[ "${1:-}" == "--outside" ]] && outside=1
     local -a lines=()
     mapfile -t lines
-    local n=${#lines[@]} i start=-1 end=-1
+    local n=${#lines[@]} i start=-1 end=-1 bt=-1 bb=-1
     local r2=-1 r1=-1
     for ((i = n - 1; i >= 0; i--)); do
         if _rb_is_input_rule "${lines[i]}"; then r2=$i; break; fi
@@ -439,7 +443,7 @@ _rb_extract_input_box() {
         for ((i = r2 - 1; i >= 0; i--)); do
             if _rb_is_input_rule "${lines[i]}"; then r1=$i; break; fi
         done
-        if (( r1 >= 0 )); then start=$((r1 + 1)); end=$((r2 - 1)); fi
+        if (( r1 >= 0 )); then start=$((r1 + 1)); end=$((r2 - 1)); bt=$r1; bb=$r2; fi
     fi
     if (( start < 0 )); then
         local bot=-1 top=-1
@@ -451,7 +455,14 @@ _rb_extract_input_box() {
             case "${lines[i]}" in *"╭"*|*"┌"*) top=$i; break ;; esac
         done
         (( top >= 0 )) || return 4
-        start=$((top + 1)); end=$((bot - 1))
+        start=$((top + 1)); end=$((bot - 1)); bt=$top; bb=$bot
+    fi
+    if (( outside )); then
+        for ((i = 0; i < n; i++)); do
+            if (( i >= bt && i <= bb )); then continue; fi
+            printf '%s\n' "${lines[i]}"
+        done
+        return 0
     fi
     local first=1 line stripped
     for ((i = start; i <= end; i++)); do
@@ -851,13 +862,25 @@ cmd_inject_file() {
     # processing を観測できないほど高速完了する prompt では false-negative→再送で二重投入の余地が残る
     # （spawn の実タスクでは非現実的・安全側＝silent 消失より二重投入を選ぶ）。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_cls _rb_xrc
+        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+            # 入力欄 interior と outside view（interior・枠を除いた transcript/status 領域）を先に確定する。
+            # 受理判定（A/B）は **outside view のみ**を見る——pane 全体を grep すると、prompt 本文が
+            # 強マーカー語（Summarizing / esc to interrupt 等）や sentinel を含む場合に、未 submit の
+            # 入力欄残留そのものへヒットして偽受理する（round-2 review wf_58b5c18e が決定論再現）。
+            _rb_xrc=0
+            _rb_interior=$(printf '%s\n' "$_rb_pane" | _rb_extract_input_box) || _rb_xrc=$?
+            _rb_scan=""
+            if [[ "$_rb_xrc" -eq 0 ]]; then
+                _rb_scan=$(printf '%s\n' "$_rb_pane" | _rb_extract_input_box --outside) || _rb_scan=""
+            fi
 
-            # (A) 強 processing マーカー 2 連続＝turn 実行中の積極証拠（受理）
-            if printf '%s' "$_rb_pane" | grep -qP -- "$_rb_strong_re"; then
+            # (A) 強 processing マーカー 2 連続＝turn 実行中の積極証拠（受理）。
+            # interior を特定できないフレーム（boot splash・描画途中）は評価しない（積極証拠にしない。
+            # 実 turn は入力欄を常に描画する〔実 TUI 検証済み〕ため正当受理は outside view で成立する）。
+            if [[ "$_rb_xrc" -eq 0 ]] && printf '%s' "$_rb_scan" | grep -qP -- "$_rb_strong_re"; then
                 _rb_strong_streak=$(( _rb_strong_streak + 1 ))
                 _rb_vanish_streak=0
                 if [[ "$_rb_strong_streak" -ge 2 ]]; then _rb_ok=true; break; fi
@@ -874,8 +897,6 @@ cmd_inject_file() {
                     ;;
                 input-waiting)
                     _rb_err_streak=0
-                    _rb_xrc=0
-                    _rb_interior=$(printf '%s\n' "$_rb_pane" | _rb_extract_input_box) || _rb_xrc=$?
                     if [[ "$_rb_xrc" -eq 0 ]]; then
                         _rb_cls=0
                         _rb_classify_interior "$_rb_interior" "$_rb_sentinel" "$_rb_tail_marker" || _rb_cls=$?
@@ -894,11 +915,10 @@ cmd_inject_file() {
                                 fi
                                 ;;
                             0|2)
-                                # (B) echo-outside-interior: sentinel が interior の外（transcript）に出現
+                                # (B) echo-outside-interior: sentinel が outside view（transcript）に出現
                                 #     ∧ baseline に不在 ＝ submit の積極証拠（fast-complete / post-submit dialog）
                                 if [[ -n "$_rb_sentinel" ]] \
-                                   && printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel" \
-                                   && ! printf '%s' "$_rb_interior" | grep -qF -- "$_rb_sentinel" \
+                                   && printf '%s' "$_rb_scan" | grep -qF -- "$_rb_sentinel" \
                                    && ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sentinel"; then
                                     _rb_ok=true; break
                                 fi

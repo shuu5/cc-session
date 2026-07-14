@@ -411,3 +411,50 @@ STATE_EOF
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 0 ]
 }
+
+# --- SSOT 同期（_rb_strong_re ↔ compaction-indicators.sh のドリフト防止・round-4 minor 反映）--------
+
+@test "SSOT 同期: COMPACTION_INDICATORS 全エントリ + esc to interrupt が _rb_strong_re の fallback リテラルに含まれる（drift fail-closed）" {
+    # _se_dialog_re の drift pin（session-comm-inject-multiline.bats）に倣う。SSOT に phase 名が
+    # 追加されたのに fallback リテラルが追随しないと、source 失敗時の縮退で compaction-accept
+    # modality が不完全化する（false-negative→再送二重投入方向）。
+    local real_ci="$SCRIPT_DIR/lib/compaction-indicators.sh"
+    [ -f "$real_ci" ]
+    local fb
+    fb=$(grep -E "_rb_strong_re='esc to interrupt" "$SCRIPT_DIR/session-comm.sh" | head -1)
+    [ -n "$fb" ]
+    run bash -c "source '$real_ci'; printf '%s\n' \"\${COMPACTION_INDICATORS[@]}\""
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+    local ind
+    while IFS= read -r ind; do
+        [[ "$fb" == *"$ind"* ]] || { echo "MISS in fallback literal: $ind"; false; }
+    done <<< "$output"
+}
+
+@test "read-back: compaction フェーズ名（SSOT 全エントリ）でも受理する（(A) の compaction modality・正例 pin）" {
+    # (A) の正例が esc to interrupt に偏ると、導出から compaction 語を落とす mutation を検出できない
+    # （round-4 review が mutation 実験で実証）。SSOT の各 phase 名で受理できることを直接 pin する。
+    source "$SCRIPT_DIR/lib/compaction-indicators.sh"
+    local ind
+    for ind in "${COMPACTION_INDICATORS[@]}"; do
+        : > "$TMUX_CALL_LOG"; echo 0 > "$CAP_COUNTER"
+        export MOCK_STATE=input-waiting
+        export MOCK_BASELINE=""
+        export MOCK_PANE="${ind}… conversation history"$'\n'"$EMPTY_BOX"
+        run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+        [ "$status" -eq 0 ] || { echo "compaction 語 '$ind' で受理されない"; false; }
+    done
+}
+
+@test "boot-race pin: transcript の corner tool box があっても最下部の Type A 入力欄を選ぶ（A-wins 方向・round-4 反映）" {
+    # bottom-most 選択則の A-wins 方向（rules 入力欄が corner tool box より下）。この方向の pin が
+    # 無いと『常時 B 選択』mutation が素通りし、残留が outside へ漏れて (B) 偽受理する
+    # （round-4 review が mutation 実験で実証）。
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE=$'╭── tool ──╮\n│ tool output │\n╰──────────╯\nmore transcript\n──────────────────\n❯ hello world\n──────────────────\n  status line'
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+    [ "$(_enter_count)" -ge 2 ]
+}

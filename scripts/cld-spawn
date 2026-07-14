@@ -22,6 +22,10 @@ Options:
   --cd DIR            起動セッションの作業ディレクトリ（既定: 現在の cwd）
   --env-file PATH     起動前に source する env ファイル（既定: ~/.cld-env）
   --window-name NAME  tmux window 名を明示指定
+  --session NAME      spawn 先 tmux session を指定（session=project 対称性の write 側）。
+                      宛先 session が無ければ detached で新規作成する（create-if-absent）。
+                      window 再利用の探索もこの session 内に限定される。省略時は現在の
+                      session が spawn 先（再利用探索も現在 session 内に限定＝session-scope）。
   --bd-id ID          bd issue id 連動命名（wt-<id>）
   --force-new         既存 window を再利用せず必ず新規作成
   --timeout N         inject 待機秒（正の整数・既定: 60）
@@ -129,6 +133,7 @@ CWD="$(pwd)"
 CD_SPECIFIED=false
 ENV_FILE=""
 WINDOW_NAME=""
+TARGET_SESSION_OPT=""  # --session の明示値（空=未指定＝現在 session が spawn 先）
 BD_ID=""
 FORCE_NEW=0
 WAIT_TIMEOUT=60
@@ -154,6 +159,17 @@ while [[ $# -gt 0 ]]; do
         --window-name)
             require_value --window-name "${2-}"
             WINDOW_NAME="$2"
+            shift 2
+            ;;
+        --session)
+            require_value --session "${2-}"
+            # tmux session 名の制約（':' '.' 不可）+ 本スクリプトが '=' 前置 exact match で
+            # 参照するため、英数字・'-'・'_' のみ許容（先頭は英数字）。fail-loud。
+            if ! [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+                echo "Error: --session 名は英数字・'-'・'_' のみ（先頭は英数字）: $2" >&2
+                exit 1
+            fi
+            TARGET_SESSION_OPT="$2"
             shift 2
             ;;
         --bd-id)
@@ -249,6 +265,7 @@ if [[ -n "$INJECT_EXISTING" ]]; then
     $CD_SPECIFIED && _conflict+=" --cd"
     [[ -n "$ENV_FILE" ]] && _conflict+=" --env-file"
     [[ -n "$WINDOW_NAME" ]] && _conflict+=" --window-name"
+    [[ -n "$TARGET_SESSION_OPT" ]] && _conflict+=" --session"
     [[ -n "$BD_ID" ]] && _conflict+=" --bd-id"
     [[ "$FORCE_NEW" -eq 1 ]] && _conflict+=" --force-new"
     if [[ -n "$_conflict" ]]; then
@@ -294,6 +311,20 @@ if $CD_SPECIFIED; then
     CWD="$(realpath -m "$CWD")"
     if [[ ! -d "$CWD" ]]; then
         echo "Error: ディレクトリが存在しません: $CWD" >&2
+        exit 1
+    fi
+fi
+
+# spawn 先 session の解決（--session 明示 > 現在 session）。window の生成・再利用探索・
+# 存在検証・manifest 記録・プロンプト送達はすべてこの TARGET_SESSION スコープで行う
+# （session-scope 化・ccs-y9h。現状の「current session に生成するのに再利用は全 session 横断」
+# という非対称が、別プロジェクト session の同名 window を掴む topology drift の一因だった）。
+if [[ -n "$TARGET_SESSION_OPT" ]]; then
+    TARGET_SESSION="$TARGET_SESSION_OPT"
+else
+    TARGET_SESSION="$(tmux display-message -p '#{session_name}')"
+    if [[ -z "$TARGET_SESSION" ]]; then
+        echo "Error: 現在の tmux session 名を解決できませんでした" >&2
         exit 1
     fi
 fi
@@ -353,9 +384,9 @@ fi
 TRAP
 } > "$LAUNCHER"
 
-# 同一 canonical_context の既存 window 再利用（--force-new 未指定時）
+# 同一 canonical_context の既存 window 再利用（--force-new 未指定時・TARGET_SESSION 内のみ）
 if [[ "$FORCE_NEW" -eq 0 ]]; then
-    _EXISTING=$(find_existing_window "$WINDOW_NAME")
+    _EXISTING=$(find_existing_window "$WINDOW_NAME" "$TARGET_SESSION")
     if [[ -n "$_EXISTING" ]]; then
         # --disallowed-tools は起動時にしか適用できない（既存 window には後付け不可）。
         # 黙って未封鎖 window を再利用し exit 0（偽成功）にせず fail-loud で止める（#3 fail-open 修正）。
@@ -380,9 +411,9 @@ if ! flock -w 5 200; then
     exit 1
 fi
 
-# ロック内で再チェック（競合プロセスが先に作成した可能性）
+# ロック内で再チェック（競合プロセスが先に作成した可能性・TARGET_SESSION 内のみ）
 if [[ "$FORCE_NEW" -eq 0 ]]; then
-    _EXISTING=$(find_existing_window "$WINDOW_NAME")
+    _EXISTING=$(find_existing_window "$WINDOW_NAME" "$TARGET_SESSION")
     if [[ -n "$_EXISTING" ]]; then
         if [[ "${#DISALLOWED_TOOLS[@]}" -gt 0 ]]; then
             exec 200>&-
@@ -398,33 +429,42 @@ if [[ "$FORCE_NEW" -eq 0 ]]; then
     fi
 fi
 
-tmux new-window -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
+# 宛先 session が無ければ detached で新規作成し、その初期 window として起動する
+# （create-if-absent・orch-thgx 追補4: 1-window session の admin kill は tmux session ごと
+# 破棄されるため、次回 spawn が session を再建できる必要がある）。has-session/new-window の
+# session 参照は '=' 前置の exact match（tmux 既定の prefix match による誤爆防止）。
+# この check-then-create は上の flock 区間内＝並列 spawn の duplicate session race も排除される。
+if tmux has-session -t "=$TARGET_SESSION" 2>/dev/null; then
+    tmux new-window -t "=$TARGET_SESSION:" -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
+else
+    tmux new-session -d -s "$TARGET_SESSION" -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
+fi
 exec 200>&-  # ロック解放
 
 # Verify window was created
 sleep 0.5
-if ! tmux list-windows -F '#{window_name}' | grep -qF "$WINDOW_NAME"; then
+if ! tmux list-windows -t "=$TARGET_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$WINDOW_NAME"; then
     rm -f "$LAUNCHER"
     echo "Error: tmux window の作成に失敗しました" >&2
     exit 1
 fi
 
-echo "spawned → tmux window '$WINDOW_NAME'"
+echo "spawned → tmux window '$WINDOW_NAME' (session: $TARGET_SESSION)"
 
 # --- window-manifest 書き出し (Phase 2 / #290) ---
 # shellcheck source=./window-manifest.sh
 source "$SCRIPT_DIR/window-manifest.sh" 2>/dev/null || true
 if declare -f manifest_append_entry > /dev/null 2>&1; then
-    _WM_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "main")
+    _WM_SESSION="$TARGET_SESSION"
     # window_id(@N) も捕捉する。bd 階層 id（dotted、例 wt-un-3sh.3.5）は tmux の -t ターゲット構文
     # （`.` が window.pane 区切り）と衝突し、`-t <名前>` の send-keys/capture-pane が "can't find pane"
     # で失敗する（独立 socket で実証）。set-hook は **不変な window_id で参照**して dotted 名でも確実に
     # 紐づける（id 解決失敗時のみ名前へフォールバック＝後方互換）。
     # NB: 送達(session-comm.sh)・状態(session-state.sh)は resolve_target で名前→session:index を
     #     先に解決済み＝既に dot-safe。fleet-monitor の照合も name 文字列一致で dot-safe。
-    _WM_INDEX=$(tmux list-windows -F '#{window_name} #{window_index}' 2>/dev/null \
+    _WM_INDEX=$(tmux list-windows -t "=$TARGET_SESSION" -F '#{window_name} #{window_index}' 2>/dev/null \
         | awk -v n="$WINDOW_NAME" '$1==n {print $2; exit}')
-    _WM_WID=$(tmux list-windows -F '#{window_id} #{window_name}' 2>/dev/null \
+    _WM_WID=$(tmux list-windows -t "=$TARGET_SESSION" -F '#{window_id} #{window_name}' 2>/dev/null \
         | awk -v n="$WINDOW_NAME" '$2==n {print $1; exit}')
     manifest_append_entry "$WINDOW_NAME" "$_WM_SESSION" "${_WM_INDEX:-0}" \
         "$CWD" "$CWD" "wt" 2>/dev/null || true
@@ -433,7 +473,8 @@ if declare -f manifest_append_entry > /dev/null 2>&1; then
     # printf '%q' 済み＝run-shell の単一引用符を破る文字は含まれない（'.' は引用符を破らない・安全）。
     _WM_SCRIPT=$(printf '%q' "$SCRIPT_DIR/window-manifest.sh")
     _WM_WINNAME=$(printf '%q' "$WINDOW_NAME")
-    _WM_HOOK_TGT="${_WM_WID:-$WINDOW_NAME}"
+    # フォールバック側も session 修飾で曖昧さを排除（window_id 解決失敗時のみ使用）
+    _WM_HOOK_TGT="${_WM_WID:-$TARGET_SESSION:$WINDOW_NAME}"
     tmux set-hook -t "$_WM_HOOK_TGT" pane-died \
         "run-shell 'bash $_WM_SCRIPT tombstone $_WM_WINNAME'" 2>/dev/null || true
     # rename 時は旧 window_name を tombstone にする
@@ -448,8 +489,11 @@ fi
 
 # --- inject-file --wait + read-back でプロンプトを送達（有界リトライ・ccs-ldt） ---
 # 送達ロジックは deliver_prompt（inject-existing 経路と共通の SSOT）へ委譲する。
-if deliver_prompt "$WINDOW_NAME" "$PROMPT"; then
-    echo "prompt injected → '$WINDOW_NAME'"
+# 宛先は session:window 修飾で渡す（bare 名だと resolve_target が全 session 横断の先頭一致で
+# 解決し、別 session の同名 window へ誤送達しうるため。resolve_target は session:window を
+# その session 内で session:index へ解決する＝dot-safe も維持）。
+if deliver_prompt "$TARGET_SESSION:$WINDOW_NAME" "$PROMPT"; then
+    echo "prompt injected → '$TARGET_SESSION:$WINDOW_NAME'"
     exit 0
 fi
 echo "Error: プロンプトの送達に失敗しました（${CLD_INJECT_ATTEMPTS:-3}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2

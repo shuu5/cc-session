@@ -255,3 +255,44 @@ EOF
   result=$(find_existing_window "wt-myrepo-main-abcd1234")
   [ "$result" = "main:1" ]
 }
+
+@test "find_existing_window: session 指定時はその session 内のみ探索する（他 session の同名を掴まない）" {
+  source "$SESSION_NAME_SH"
+
+  # tmux スタブ: '-t =proj' なら proj 内のみ、'-a' なら全 session を返す
+  cat > "${STUB_BIN}/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"-t =proj"* ]]; then
+  echo "proj:1 wt-shared-name"
+elif [[ "$*" == *"-a"* ]]; then
+  echo "other:3 wt-shared-name"
+  echo "proj:1 wt-shared-name"
+fi
+EOF
+  chmod +x "${STUB_BIN}/tmux"
+
+  # session 省略（従来）: 全 session 横断の先頭一致 = other:3
+  result=$(find_existing_window "wt-shared-name")
+  [ "$result" = "other:3" ]
+
+  # session 指定: proj 内のみ = proj:1
+  result=$(find_existing_window "wt-shared-name" "proj")
+  [ "$result" = "proj:1" ]
+}
+
+@test "find_existing_window: 指定 session が不在なら空文字（エラーにしない）" {
+  source "$SESSION_NAME_SH"
+
+  # tmux スタブ: 不在 session への -t はエラー（実 tmux 同様 stderr + 非0）
+  cat > "${STUB_BIN}/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"-t =nosuch"* ]]; then
+  echo "can't find session: nosuch" >&2
+  exit 1
+fi
+EOF
+  chmod +x "${STUB_BIN}/tmux"
+
+  result=$(find_existing_window "wt-any" "nosuch")
+  [ -z "$result" ]
+}

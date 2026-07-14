@@ -171,7 +171,8 @@ worker セッションを bd issue に紐づけて起動するとき、プロン
    2. `session-state.sh wait` で input-waiting 状態を待機（デフォルト60秒）
    3. プロンプトを一時ファイルに書き出し `session-comm.sh inject-file` で送達
 
-   stdout からウィンドウ名を取得（`spawned → tmux window 'WINDOW_NAME'` の形式）。
+   stdout からウィンドウ名を取得（`spawned → tmux window 'WINDOW_NAME' (session: SESSION)` の形式。
+   ウィンドウ名は最初の引用符内。`--session` 未指定時の spawn 先は現在の session）。
 
 4. 完了監視（`WATCH=off` 以外、デフォルト ON）
 

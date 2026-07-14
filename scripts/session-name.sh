@@ -6,8 +6,8 @@
 #     → <prefix>-<repo>-<branch>[-i<issue>]-<h8> (max 50文字)
 #   slugify <str> [<maxlen>]
 #     → ASCII英数ハイフンのみのslug
-#   find_existing_window <name>
-#     → session:index (未発見なら空文字)
+#   find_existing_window <name> [session]
+#     → session:index (未発見なら空文字。session 指定時はその session 内のみ探索)
 #
 # Note: set -e なし（source 時の親スクリプトに影響しないため）
 # Note: 本スクリプトは source で読み込む（直接実行不可）
@@ -216,10 +216,20 @@ spawn_window_name() {
   printf 'wt-%s' "$bd_id"
 }
 
-# find_existing_window <name>
+# find_existing_window <name> [session]
 # 指定名のtmux windowを検索し、"session:index"形式で返す。未発見なら空文字。
+# 第2引数 session を渡すと **その session 内のみ** 探索する（window 再利用の session-scope 化・
+# ccs-y9h: 全 session 横断の bare 名一致再利用は別プロジェクト session の同名 window を掴む
+# topology drift の一因だったため、生成スコープ＝再利用スコープに揃える）。
+# 省略時は従来どおり全 session 横断（後方互換）。session は '=' 前置の exact match で解決する
+# （tmux の -t は既定 prefix match のため）。session 不在時はエラーにせず空文字（未発見扱い）。
 find_existing_window() {
-  local name="$1"
-  tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
-    | awk -v n="$name" '$2==n {print $1; exit}'
+  local name="$1" session="${2:-}"
+  if [ -n "$session" ]; then
+    tmux list-windows -t "=$session" -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
+      | awk -v n="$name" '$2==n {print $1; exit}'
+  else
+    tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null \
+      | awk -v n="$name" '$2==n {print $1; exit}'
+  fi
 }

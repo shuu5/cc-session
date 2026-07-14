@@ -399,6 +399,101 @@ cmd_inject() {
 }
 
 # =============================================================================
+# read-back 判定ヘルパ（ccs-mxv・positive-proof 化）
+#
+# 受理述語から sentinel-presence（＝到着の証拠）を排除する。sentinel の pane 出現は
+# 「paste が届いた」ことしか証明せず「submit（turn 開始）」を証明しない——boot 中の
+# promo/TUI 再描画が初回 Enter を食うと、入力欄残留や一過性フレームの sentinel で
+# 偽『受理』を返し spawn kickoff が silent 消失する（orch-sm6p/sc-8g5 verified・orch-ttqe）。
+# 設計原本は scribe-inject do_verify の実証済み核（入力欄 interior 抽出 + 3 値分類・
+# DJ-b「Enter は RESIDUAL のときだけ」）。
+# =============================================================================
+
+# bracketed paste の折りたたみ placeholder（scribe-inject PASTE_PLACEHOLDER_RE と同型・
+# 入力欄内に見えたら「我々の paste が未 submit で滞留」＝RESIDUAL 扱い＝un-iur の救済対象）
+_RB_PASTE_PLACEHOLDER_RE='\[[Pp]asted text|\[[0-9]+ (more )?lines?( pasted)?\]|[Pp]asted [0-9]+ lines?'
+
+# _rb_is_input_rule <line> — 入力欄を囲む水平罫線行か（─×10 連以上・box 側面/角 glyph を含まない）
+_rb_is_input_rule() {
+    case "$1" in
+        *"│"*|*"┌"*|*"┐"*|*"└"*|*"┘"*|*"├"*|*"┤"*|*"┬"*|*"┴"*|*"┼"*|*"╭"*|*"╮"*|*"╰"*|*"╯"*) return 1 ;;
+    esac
+    case "$1" in
+        *"──────────"*) return 0 ;;
+    esac
+    return 1
+}
+
+# _rb_extract_input_box — stdin の pane capture から入力欄 interior を抽出して stdout へ。
+#   Type A: 最下部の水平罫線ペア / Type B: 最下部の corner box（╰/└ → 直上の ╭/┌）。
+#   見つからなければ exit 4（interior 不明＝呼出側は INCONCLUSIVE 扱い・受理も Enter もしない）。
+_rb_extract_input_box() {
+    local -a lines=()
+    mapfile -t lines
+    local n=${#lines[@]} i start=-1 end=-1
+    local r2=-1 r1=-1
+    for ((i = n - 1; i >= 0; i--)); do
+        if _rb_is_input_rule "${lines[i]}"; then r2=$i; break; fi
+    done
+    if (( r2 >= 0 )); then
+        for ((i = r2 - 1; i >= 0; i--)); do
+            if _rb_is_input_rule "${lines[i]}"; then r1=$i; break; fi
+        done
+        if (( r1 >= 0 )); then start=$((r1 + 1)); end=$((r2 - 1)); fi
+    fi
+    if (( start < 0 )); then
+        local bot=-1 top=-1
+        for ((i = n - 1; i >= 0; i--)); do
+            case "${lines[i]}" in *"╰"*|*"└"*) bot=$i; break ;; esac
+        done
+        (( bot >= 0 )) || return 4
+        for ((i = bot - 1; i >= 0; i--)); do
+            case "${lines[i]}" in *"╭"*|*"┌"*) top=$i; break ;; esac
+        done
+        (( top >= 0 )) || return 4
+        start=$((top + 1)); end=$((bot - 1))
+    fi
+    local first=1 line stripped
+    for ((i = start; i <= end; i++)); do
+        line="${lines[i]}"
+        # 枠側面・box-drawing・交差 glyph を除去（内容だけ残す）
+        line="${line//│/}"; line="${line//─/}"
+        line="${line//╭/}"; line="${line//╮/}"; line="${line//╰/}"; line="${line//╯/}"
+        line="${line//┌/}"; line="${line//┐/}"; line="${line//└/}"; line="${line//┘/}"
+        line="${line//├/}"; line="${line//┤/}"; line="${line//┬/}"; line="${line//┴/}"; line="${line//┼/}"
+        if (( first )); then
+            # 先頭 interior 行のプロンプト記号（❯ / >）を 1 つ剥ぐ
+            line="${line#"${line%%[![:space:]]*}"}"
+            stripped="${line#❯}"; line="$stripped"
+            stripped="${line#>}"; line="$stripped"
+            first=0
+        fi
+        printf '%s\n' "$line"
+    done
+}
+
+# _rb_classify_interior <interior> <head_sentinel> <tail_marker> — 入力欄 interior の 3 値分類。
+#   return 3 = RESIDUAL（我々の注入テキスト or paste placeholder が入力欄に居る＝「未 submit」の積極証明。
+#              救済 Enter の唯一の発火条件・DJ-b。RESIDUAL とダイアログ表示は排他——ダイアログは
+#              interior を占め marker 不在→INCONCLUSIVE になる——ため dialog modality ガードを内包する）
+#   return 0 = DELIVERED（interior 空＝入力欄クリア）
+#   return 2 = INCONCLUSIVE（帰属不能な非空内容＝ダイアログ/他者入力。受理も Enter もしない）
+_rb_classify_interior() {
+    local interior="$1" head_sent="$2" tail_marker="$3"
+    if [[ -n "$head_sent" ]] && printf '%s' "$interior" | grep -qF -- "$head_sent"; then return 3; fi
+    if [[ -n "$tail_marker" ]] && printf '%s' "$interior" | grep -qF -- "$tail_marker"; then return 3; fi
+    if printf '%s' "$interior" | grep -qE -- "$_RB_PASTE_PLACEHOLDER_RE"; then return 3; fi
+    # 空判定: 空白・NBSP（実 CC TUI の空入力欄は「❯ + NBSP」）・余剰プロンプト記号のみなら DELIVERED
+    local core
+    core="$(printf '%s' "$interior" | tr -d '[:space:]')"
+    core="${core//$'\xc2\xa0'/}"
+    core="${core//>/}"
+    core="${core//❯/}"
+    [[ -z "$core" ]] && return 0
+    return 2
+}
+
+# =============================================================================
 # サブコマンド: inject-file
 # =============================================================================
 cmd_inject_file() {
@@ -515,6 +610,26 @@ cmd_inject_file() {
         _se_dialog_re='Enter to select|↑/↓ to navigate|承認しますか|確認しますか|Do you want to|\[y/N\]|\[Y/n\]|Type something|Waiting for user input'
     fi
 
+    # 強 processing マーカー（ccs-mxv）: detect_state の既定 fallthrough は processing（パターン不在の
+    # 残余クラス）のため、state==processing は「turn 実行中」の積極証拠にならない（boot splash も
+    # processing と読める）。read-back の受理判定には pane 直読の強マーカー（esc to interrupt /
+    # thinking 進行形 / compaction フェーズ名）のみを使う。SSOT は session-state.sh（同 SSOT を
+    # subshell source する流儀は上の _se_dialog_re と同一・失敗時は既知良好リテラルへ fail-closed）。
+    local _rb_strong_re=''
+    _rb_strong_re=$(
+        source "${SCRIPT_DIR}/session-state.sh" 2>/dev/null || exit 0
+        _p="esc to interrupt"
+        [[ -n "${THINKING_PROGRESS_PATTERN:-}" ]] && _p="${_p}|${THINKING_PROGRESS_PATTERN}"
+        if [[ -n "${COMPACTION_INDICATORS+x}" ]] && [[ "${#COMPACTION_INDICATORS[@]}" -gt 0 ]]; then
+            IFS='|'
+            _p="${_p}|${COMPACTION_INDICATORS[*]}"
+        fi
+        printf '%s' "$_p"
+    ) || _rb_strong_re=''
+    if [[ -z "$_rb_strong_re" ]]; then
+        _rb_strong_re='esc to interrupt|Compacting|Snapshotting|Externalizing|Restoring|Summarizing'
+    fi
+
     local target
     target=$(resolve_target "$window_name") || exit 1
 
@@ -574,13 +689,19 @@ cmd_inject_file() {
     # baseline = paste 前の画面。sentinel = prompt 先頭非空行の先頭 24 字（pane 折返しに耐えるよう短め）。
     # 「sentinel が paste 後に出現し baseline には無い」を持続シグナルとして使い、processing が一瞬で
     # 終わる fast-complete でも受理を取りこぼさない（false-negative→cld-spawn 再送による二重投入の防止）。
-    local _rb_baseline="" _rb_sentinel=""
+    local _rb_baseline="" _rb_sentinel="" _rb_tail_marker=""
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
         _rb_baseline=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
         # 空/空白のみ prompt では grep が no-match で exit 1 → set -euo pipefail 下で代入行が abort し
         # paste 前に silent 失敗する。baseline 行と対称に `|| true` で吸収する（空 sentinel は下で無効化）。
         _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-24 || true)
         if [[ "${#_rb_sentinel}" -lt 8 ]]; then _rb_sentinel=""; fi  # 短い先頭行は誤一致回避でスキップ
+        # tail marker（ccs-mxv・scribe _derive_marker 同型）: 最終非空行の末尾 24 字＝cursor が座る箇所。
+        # 入力欄 interior の RESIDUAL 検出は末尾側が可視になりやすい（長文は先頭が隠れる）ため head と併用する。
+        _rb_tail_marker=$(awk 'NF{l=$0} END{if(l!="")print l}' "$file_path" 2>/dev/null || true)
+        _rb_tail_marker="${_rb_tail_marker%"${_rb_tail_marker##*[![:space:]]}"}"
+        if [[ "${#_rb_tail_marker}" -gt 24 ]]; then _rb_tail_marker="${_rb_tail_marker: -24}"; fi
+        if [[ "${#_rb_tail_marker}" -lt 8 ]]; then _rb_tail_marker=""; fi
     fi
 
     # --clear-first: 再送時に入力欄へ残る部分 paste を C-u でクリアし、再 paste の重複を防ぐ（ccs-ldt）。
@@ -699,73 +820,100 @@ cmd_inject_file() {
         fi
     fi
 
-    # 送達 read-back（ccs-ldt）: --confirm-receipt 指定かつ Enter 送出時のみ。
-    # paste 成功（tmux 層）だけでは「claude が prompt を受理した」ことを意味しない（起動時 welcome は
-    # bracketed paste を drop しうる）。受理を 2 つのシグナルで確認し、どちらも取れなければ非 0(=4) で返す:
-    #   (1) 持続: 我々の prompt 内容（sentinel）が画面に出現し baseline には無い＝確実に受理。fast-complete
-    #            でも会話履歴に残るため取りこぼさない（false-negative→cld-spawn 再送による二重投入を防ぐ）。
-    #   (2) 遷移: state==processing を 2 連続観測＝claude 実行中。detect_state の既定 fallthrough も
-    #            processing のため、welcome 遷移の単発 flicker による false-accept を「2 連続要求」で除去する。
-    # error/exited は 2 連続観測で未着確定（単発の transient 誤判定は無視＝processing と対称）。
-    # budget 失効も未着（exit 4）。呼び出し側（cld-spawn）は非 0 を受けて再送する。
-    # 複数行 paste 折りたたみ吸収の救済（un-iur, read-back 経路）: cld-spawn の初期 inject は常に
-    # --confirm-receipt 経由（confirm_receipt>0）なので、上の confirm_receipt==0 限定の追い Enter ループは
-    # 効かない。決定論的な折りたたみ吸収（25 行 paste で初回 Enter が常に吸収・再 paste でも吸収）の場合、
-    # read-back は毎回 input-waiting を見て exit 4 → cld-spawn が同一『paste＋単発 Enter』を再送するだけで
-    # 各リトライも同じく吸収され、MAX_ATTEMPTS 後に送達失敗（exit 1）に陥りうる。これを塞ぐため、read-back
-    # ループ内で input-waiting（=未 submit の滞留）を観測したら、上の追い Enter と同一の modality ガード下で
-    # 有界（_se_max）の救済 Enter を撃って吸収された submit を flush する。
-    #   - desync 回避: input-waiting は従来どおり両 streak をリセットする（processing/error の連続判定ロジックは
-    #     一切変えない＝counter ベース mock を desync させない）。救済 Enter は受理判定に介入しない。
-    #   - 二重 submit 回避: sentinel が見えれば(1)で、processing 2 連続なら(2)で先に break＝救済 Enter は
-    #     『sentinel 不可視（折りたたみ）かつ input-waiting かつ dialog 不可視』のときのみ撃つ。dialog 可視時は
-    #     modality ガードで撃たない（post-submit ダイアログの既定確定を防ぐ）。空 Enter は素入力欄では no-op。
-    # 既知の限界: sentinel が pane で折返し/スクロール退避し、かつ processing を 2 連続で観測できないほど
-    # 高速完了する prompt（spawn の実タスクでは非現実的）では false-negative→再送で二重投入の余地が残る。
+    # 送達 read-back（ccs-ldt → ccs-mxv で positive-proof 化）: --confirm-receipt 指定かつ Enter 送出時のみ。
+    # paste 成功（tmux 層）だけでは「claude が prompt を受理した」ことを意味しない。さらに sentinel の
+    # pane 出現も「到着」しか証明せず「submit（turn 開始）」を証明しない——boot 中の promo/TUI 再描画が
+    # 初回 Enter を食うと、入力欄残留や一過性フレームの sentinel で偽『受理』を返し、spawn kickoff が
+    # silent 消失する（orch-sm6p/sc-8g5 verified・orch-ttqe の根治対象）。受理は submit の積極証拠のみ:
+    #   (A) 強 processing 2 連続: pane 直読で esc to interrupt / thinking 進行形 / compaction フェーズ名
+    #       （SSOT=session-state.sh）を 2 連続観測＝turn 実行中。state==processing は使わない（detect_state
+    #       の既定 fallthrough が processing のため splash 滞留も processing と読める＝弱い証拠）。
+    #   (B) echo-outside-interior: sentinel が入力欄 interior の**外**（transcript）に出現 ∧ baseline に
+    #       不在＝submit されて会話履歴に載った証拠。fast-complete / post-submit ダイアログの
+    #       false-negative（→再送二重投入）を防ぐ。
+    # 非受理側:
+    #   - RESIDUAL（interior に head sentinel / tail marker / paste placeholder）＝「未 submit」の積極証明
+    #     → 有界（_se_max）の救済 Enter で submit を flush（un-iur の折りたたみ吸収救済を包含）。
+    #     Enter は RESIDUAL のときだけ撃つ（DJ-b）。RESIDUAL とダイアログは排他（ダイアログは interior を
+    #     占め INCONCLUSIVE になる）ため、この RESIDUAL-gate は旧 dialog modality ガードを subsume する。
+    #   - INCONCLUSIVE（帰属不能な interior / interior 抽出不能）＝判定保留（受理も Enter もしない）。
+    #   - vanished（interior 空 ∧ sentinel が pane 全体に不在）2 連続＝paste が boot 再描画で飲まれた
+    #     → 早期 fail（budget を待たず exit 4）→ 呼出側（cld-spawn）が --clear-first で再送。
+    #   - error/exited 2 連続＝未着確定（単発の transient 誤判定は無視・ccs-e0i item3 不変）。
+    #   - budget 失効＝未着（exit 4）。
+    # 既知の限界（旧実装から不変）: 折りたたみ paste（transcript echo も placeholder 表示）かつ強
+    # processing を観測できないほど高速完了する prompt では false-negative→再送で二重投入の余地が残る
+    # （spawn の実タスクでは非現実的・安全側＝silent 消失より二重投入を選ぶ）。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state _rb_pane _rb_ok=false _rb_streak=0 _rb_err_streak=0 _rb_resub=0
+        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_cls _rb_xrc
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
-            # (1) 持続シグナル: prompt 内容が画面に出現（baseline 差分）
-            if [[ -n "$_rb_sentinel" ]]; then
-                _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
-                if printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel" \
-                   && ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sentinel"; then
-                    _rb_ok=true; break
-                fi
+            _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
+
+            # (A) 強 processing マーカー 2 連続＝turn 実行中の積極証拠（受理）
+            if printf '%s' "$_rb_pane" | grep -qP -- "$_rb_strong_re"; then
+                _rb_strong_streak=$(( _rb_strong_streak + 1 ))
+                _rb_vanish_streak=0
+                if [[ "$_rb_strong_streak" -ge 2 ]]; then _rb_ok=true; break; fi
+                sleep 0.3
+                continue
             fi
-            # (2) 遷移シグナル: processing/error をどちらも 2 連続観測で確定（単発 flicker を除去）。
-            #     detect_state は screen-scraping ヒューリスティックで単発の誤判定がありうるため、
-            #     processing（受理）も error/exited（未着）も「2 連続」を要求して対称化する（ccs-e0i item3）。
-            #     これにより transient な error 誤判定での premature break→再送（二重投入）を防ぐ。
-            #     非連続の振動（error→processing→error 等）はどちらの streak も 2 に達さず budget 失効へ。
+            _rb_strong_streak=0
+
             _rb_state=$("${_state_script_dir}/session-state.sh" state "$window_name" 2>/dev/null) || _rb_state="unknown"
             case "$_rb_state" in
-                processing)
-                    _rb_streak=$(( _rb_streak + 1 )); _rb_err_streak=0
-                    if [[ "$_rb_streak" -ge 2 ]]; then _rb_ok=true; break; fi
-                    ;;
                 error|exited)
-                    _rb_err_streak=$(( _rb_err_streak + 1 )); _rb_streak=0
+                    _rb_err_streak=$(( _rb_err_streak + 1 ))
                     if [[ "$_rb_err_streak" -ge 2 ]]; then break; fi   # 2 連続で異常終了確定＝未着（fail）
                     ;;
                 input-waiting)
-                    _rb_streak=0; _rb_err_streak=0  # 受理判定ロジックは不変（desync 防止）
-                    # 折りたたみ吸収の救済: 未 submit の滞留に有界の救済 Enter を撃つ（dialog 可視時は撃たない）。
-                    if [[ "$_rb_resub" -lt "$_se_max" ]]; then
-                        _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
-                        if ! printf '%s' "$_rb_pane" | grep -qE -- "$_se_dialog_re"; then
-                            session_msg send "$target" "" --enter-only
-                            ((_rb_resub++)) || true
-                        fi
+                    _rb_err_streak=0
+                    _rb_xrc=0
+                    _rb_interior=$(printf '%s\n' "$_rb_pane" | _rb_extract_input_box) || _rb_xrc=$?
+                    if [[ "$_rb_xrc" -eq 0 ]]; then
+                        _rb_cls=0
+                        _rb_classify_interior "$_rb_interior" "$_rb_sentinel" "$_rb_tail_marker" || _rb_cls=$?
+                        case "$_rb_cls" in
+                            3)  # RESIDUAL: 未 submit の積極証明 → 有界の救済 Enter（DJ-b・唯一の Enter 発火条件）
+                                _rb_vanish_streak=0
+                                if [[ "$_rb_resub" -lt "$_se_max" ]]; then
+                                    session_msg send "$target" "" --enter-only
+                                    ((_rb_resub++)) || true
+                                fi
+                                ;;
+                            0|2)
+                                # (B) echo-outside-interior: sentinel が interior の外（transcript）に出現
+                                #     ∧ baseline に不在 ＝ submit の積極証拠（fast-complete / post-submit dialog）
+                                if [[ -n "$_rb_sentinel" ]] \
+                                   && printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel" \
+                                   && ! printf '%s' "$_rb_interior" | grep -qF -- "$_rb_sentinel" \
+                                   && ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sentinel"; then
+                                    _rb_ok=true; break
+                                fi
+                                # vanished: 入力欄は空で prompt が pane から全消失＝boot 再描画で paste が
+                                # 飲まれた。2 連続で早期 fail し呼出側の再送を早める（INCONCLUSIVE=cls2 は
+                                # ダイアログ等が interior を占める場合で、budget 失効に委ねる＝再送が
+                                # ダイアログへ paste する事故を急がせない）。
+                                if [[ "$_rb_cls" -eq 0 ]] && [[ -n "$_rb_sentinel" ]] \
+                                   && ! printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel"; then
+                                    _rb_vanish_streak=$(( _rb_vanish_streak + 1 ))
+                                    if [[ "$_rb_vanish_streak" -ge 2 ]]; then break; fi
+                                else
+                                    _rb_vanish_streak=0
+                                fi
+                                ;;
+                        esac
+                    else
+                        _rb_vanish_streak=0   # interior 不明（描画途中等）＝判定保留
                     fi
                     ;;
-                *)            _rb_streak=0; _rb_err_streak=0 ;;  # idle/unknown は両 streak リセット
+                *)  # processing（弱＝fallthrough の可能性）/idle/unknown: 受理せず判定保留
+                    _rb_err_streak=0; _rb_vanish_streak=0 ;;
             esac
             sleep 0.3
         done
         if ! $_rb_ok; then
-            echo "Error: prompt not confirmed received by '$window_name' (state=${_rb_state:-unknown} after ${confirm_receipt}s)" >&2
+            echo "Error: prompt not confirmed received by '$window_name' (state=${_rb_state:-unknown} after ${confirm_receipt}s / submit の積極証拠なし・ccs-mxv)" >&2
             exit 4
         fi
     fi

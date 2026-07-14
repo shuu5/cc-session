@@ -253,3 +253,28 @@ _run_spawn() {
     [[ "$output" == *"prompt injected → 'cld-spawn-test'"* ]]
     [[ "$output" == *"安全文字集合外"* ]]
 }
+
+@test "session: --window-name が送達 allowlist 外でも偽失敗しない（window 軸の bare フォールバック・round-2 反映）" {
+    export EXISTING_SESSIONS="cursess"
+    export CURRENT_SESSION_STUB="cursess"
+    export WINDOW_NAME_STUB="foo@bar"
+    _run_spawn --window-name "foo@bar" -- "hello"
+    [ "$status" -eq 0 ]
+    # 修飾すると resolve_target の window allowlist が '@' を reject し偽失敗になるため bare 送達
+    grep -q "COMM:inject-file foo@bar " "$TMUX_LOG" \
+        || { echo "log: $(cat "$TMUX_LOG")"; false; }
+    ! grep -q "COMM:inject-file cursess:foo@bar" "$TMUX_LOG"
+    [[ "$output" == *"prompt injected → 'foo@bar'"* ]]
+    [[ "$output" == *"安全文字集合外"* ]]
+}
+
+@test "session: dotted bd id の window 名は修飾送達される（安全集合内・回帰確認）" {
+    export EXISTING_SESSIONS="cursess"
+    export CURRENT_SESSION_STUB="cursess"
+    export WINDOW_NAME_STUB="wt-un-3sh.3.5"
+    _run_spawn --window-name "wt-un-3sh.3.5" -- "hello"
+    [ "$status" -eq 0 ]
+    grep -q "COMM:inject-file cursess:wt-un-3sh.3.5 " "$TMUX_LOG" \
+        || { echo "log: $(cat "$TMUX_LOG")"; false; }
+    [[ "$output" == *"prompt injected → 'cursess:wt-un-3sh.3.5'"* ]]
+}

@@ -1,6 +1,6 @@
 # cc-session
 
-汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、**ready-compaction**（compaction-prep の policy router 兼 effort 一時層 carrier）、および **enforce**（hard 強制層: PreToolUse(Bash) hook が gate 未通過の危険操作を deny-block する。policy 存在で opt-in）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
+汎用 Claude Code セッション管理プラグイン。tmux ウィンドウでの Claude Code セッションの **spawn / fork** と状態検出、**ready-compaction**（context cycle〔/clear・respawn〕前退避の policy router 兼 effort 一時層 carrier。auto-compact 発火〔incident〕時の復元安全網フック付き）、および **enforce**（hard 強制層: PreToolUse(Bash) hook が gate 未通過の危険操作を deny-block する。policy 存在で opt-in）を提供する。特定プロジェクトに依存しない（namespace は環境変数で切り替え可能）。
 
 ## Beads Issue Tracker (bd)
 

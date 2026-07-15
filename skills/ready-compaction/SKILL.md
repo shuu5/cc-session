@@ -1,29 +1,40 @@
 ---
 name: ready-compaction
 description: |
-  /compact（会話圧縮）の前に、失うと困る「命令・状態」を carrier 別に振り分けて外部化し、
-  compaction を安全に生き延びる準備をする。policy router として項目を分類し、effort 一時層
+  context cycle（/clear・respawn）の前に、失うと困る「命令・状態」を carrier 別に
+  振り分けて外部化する退避 skill。policy router として項目を分類し、effort 一時層
   （Working Memory ファイル）だけを自前で運ぶ。恒久命令はプロジェクト CLAUDE.md(git) へ昇格提案、
   横断/インシデントの事実は doobidoo、hard 候補はマーク＋ /session:enforce 昇格提案。
-  書込前に bd/git ground-truth 突合を必須とし（stale 主張を焼かない）、
-  PreCompact/PostCompact/SessionStart フックが圧縮後の自動復元と carry-forward を担う。
+  書込前に bd/git ground-truth 突合を必須とする（stale 主張を焼かない）。
+  auto-compact が発火した場合（incident）は PreCompact/PostCompact/SessionStart フックが
+  自動復元と carry-forward を担う（安全網として残置）。
 
-  Use when user wants to: prepare for compaction, externalize knowledge,
+  Use when user wants to: prepare for context cycle, externalize knowledge,
+  says 「cycle 前に退避」「/clear する前に」「respawn 前に」「context cycle」
   says 「compaction の準備」「知識を保存して」「ready-compaction」
   says 「コンテキストが限界」「/compact する前に」「作業状態を退避」
 ---
 
 # ready-compaction Skill
 
-`/compact`（Claude Code の built-in 会話圧縮）を安全に通過するための **policy router 兼 effort 一時層 carrier**。
+context cycle（`/clear`・respawn）の前に effort を退避する **policy router 兼 effort 一時層 carrier**。two-hat で働く:
 
-`/compact` の要約器が構造的に落とすのは「事実」ではなく **ambient な命令（手法・計画の弧）**。
-これは事実の店（doobidoo / MEMORY.md）では原理的に解けない。本スキルは会話から抽出した各項目を
-**「事実か命令か」「いつ効く命令か」** で分類し、それぞれ正しい carrier へ委譲する。
-自前で抱えるのは **effort 一時層（Working Memory ファイル）だけ**——恒久命令と hard は再発明せず委譲/マークする。
+- **主（cycle 前の退避 carrier）**: 意図的な context cycle の正路は `/clear`（+ 各 project の resume 正路）
+  または respawn であり、手動 `/compact` は cycle 正路から廃止済み（裁定 SSOT = scriptorium top-spec §1.1・
+  scribe protocol.md）。`/clear`・respawn は文脈を**丸ごと**捨てるため、外部化しない限り命令も状態も全て失う——
+  cycle の前に本スキルで退避する。
+- **従（auto-compact incident の復元安全網）**: auto-compact（built-in 会話圧縮の自動発火）は正常フローでなく
+  **incident**。発火時は PreCompact/PostCompact/SessionStart フックが Working Memory を機械復元する
+  非常用パラシュートとして残置している（本スキルの退避があれば incident でも sharp な足場が生き残る）。
 
-> **重要**: `/compact` は built-in CLI のため skill/tool からの自動起動は不可能。
-> 本スキルは Step 0〜3 を自動実行し、Step 4 で **ユーザーへの手動実行指示のみ** 行う。
+`/compact` の要約器が構造的に落とすのは「事実」ではなく **ambient な命令（手法・計画の弧）**——そして
+`/clear`・respawn はそもそも全てを捨てる。どちらの経路でも、これは事実の店（doobidoo / MEMORY.md）では
+原理的に解けない。本スキルは会話から抽出した各項目を **「事実か命令か」「いつ効く命令か」** で分類し、
+それぞれ正しい carrier へ委譲する。自前で抱えるのは **effort 一時層（Working Memory ファイル）だけ**——
+恒久命令と hard は再発明せず委譲/マークする。
+
+> **重要**: cycle（`/clear`・respawn）は built-in CLI / 外部操作のため skill/tool からの自動起動はしない。
+> 本スキルは Step 0〜3 を自動実行し、Step 4 で **ユーザーへの cycle 案内のみ** 行う。
 
 ## carrier モデル（要約）
 
@@ -134,9 +145,9 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 
 スキーマ（節見出し・タグ書式）は `scripts/lib/working-memory.sh` が SSOT。手書きで見出しを変えない。
 
-### Step 4: compaction 提案（ユーザー手動実行）
+### Step 4: cycle 案内（ユーザー手動実行）
 
-保存・退避の完了を報告し、`/compact` の手動実行を促す:
+保存・退避の完了を報告し、context cycle（`/clear` または respawn）の実行を案内する:
 
 ```
 ✓ 恒久命令 → プロジェクト CLAUDE.md への昇格を提案（承認分のみコミット）
@@ -144,15 +155,25 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 ✓ bd/git ground-truth 突合済み（計画弧は bd/git 現在値と整合・bd 導入リポは bd-ID 参照付き）
 ✓ effort 命令・作業状態 → Working Memory 退避（前サイクルから carry-forward 済み）
 ✓ opt-in 有効化済み（このプロジェクトで compaction フックが発火します）
->>> `/compact` を手動で実行してください（built-in CLI のため自動起動不可）
+>>> 退避完了。`/clear`（推奨）または respawn（plugin 変更後）で cycle してください。
+    /clear 後の復元は各 project が提供する resume 正路で行います（scribe 系 project は
+    /scribe:resume・orchestrator は /scriptorium:orch-resume・resume 未導入 project は
+    SessionStart(clear) が出す Working Memory ポインタから手動 Read でフォールバック）
 ```
 
 > 「✓ 突合済み」行は **3-pre の fetch が成功したときのみ**出す。bd fetch が失敗していた場合は
 > `⚠ bd 突合未成立（<理由>）——計画弧の完了主張は未検証` に置き換える（成否に依らず ✓ を
 > 印字すると、bd が壊れているときに虚偽の成功報告となる）。
 
-`/compact` 実行後は PreCompact → PostCompact → SessionStart(compact) フックが
-自動的に Working Memory を復元し、命令・制約を次サイクルへ carry-forward する。
+> 復帰導線は上記のとおり**条件法で案内する**（呼び出し元 project を静的に知り得ない汎用 skill のため
+> 単一 project のコマンドへ hardcode しない。cc-session 自身は resume skill を持たない——
+> `/session:resume` のような存在しないコマンドを案内してはならない）。
+
+> 手動 `/compact` は cycle 正路から廃止済み（裁定 SSOT = scriptorium top-spec §1.1・scribe protocol.md。
+> 本スキルは廃止対象でない——退避は /clear 経路でも同じく使う）。auto-compact が発火した場合
+> （incident）は PreCompact → PostCompact → SessionStart(compact) フックが自動的に Working Memory を
+> 復元し、命令・制約を次サイクルへ carry-forward する（非常用パラシュート＝安全網として残置。
+> 意図的 cycle ではこの経路を使わない）。
 
 ## 禁止事項（MUST NOT）
 
@@ -172,7 +193,7 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 
 - 退避先は既定で作業ディレクトリ直下 `$WORKING_MEMORY_DIR`（`.claude-session/`、環境変数で上書き可）
 - compaction フックは opt-in マーカーがあるプロジェクトでのみ動作する
-- **`/clear` 経路の安全網**: `/compact` でなく `/clear`（文脈リセット）してから退避内容を読み込んで再開する場合、`SessionStart(clear)` フック（`session-start-clear.sh`）が `/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**だけを出す（`cat` 自動注入も `consumed` mv もしない）。厳密 session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で全件列挙してフォールバックする（`/clear` は session_id を変える〔実測 verified〕ため厳密一致は空振りし、この全件列挙が復帰の主経路。最新 1 件のみだと自分の古いファイルが並走セッションのファイルに隠れるため。候補は別セッション由来の可能性もあり原因は断定しない）。`/clear` は `PreCompact`/`PostCompact` を発火させない（compaction 専用）ため、自動復元はされず手動 Read 前提の安全網である点に注意（設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節・bd ccs-et2）
+- **`/clear` 経路（意図的 cycle の主経路）**: 意図的な context cycle は `/clear`（または respawn）が正路。`/clear` 後の復元の本線は各 project の resume 正路（Step 4 の条件法案内を参照）で、`SessionStart(clear)` フック（`session-start-clear.sh`）は新コンテキストに退避ファイルへの **read-only ポインタ**だけを出す（`cat` 自動注入も `consumed` mv もしない。resume 未導入 project はこのポインタから手動 Read）。厳密 session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で全件列挙してフォールバックする（`/clear` は session_id を変える〔実測 verified〕ため厳密一致は空振りし、この全件列挙がポインタ提示の主経路。最新 1 件のみだと自分の古いファイルが並走セッションのファイルに隠れるため。候補は別セッション由来の可能性もあり原因は断定しない）。`/clear` は `PreCompact`/`PostCompact` を発火させない（compaction 専用）ため、PostCompact 型の自動復元は走らない——自動復元フックは **auto-compact 発火（incident）時の安全網**であって `/clear` 主経路の機構ではない（設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節〔read-only ポインタ機構の記述・節名は歴史的〕・bd ccs-et2。framing の二分: `/clear`=計画 cycle の主経路・auto-compact=incident パラシュート＝真の安全網）
 - PostCompact が復元すると Working Memory は `$WORKING_MEMORY_CONSUMED_FILE`（session-scoped: `working-memory.<sid>.consumed.md`）へ mv される（削除しない）。
   この consumed が次サイクルの **carry-forward の供給源**になる（命令・制約節を機械引き継ぎ）。退避ファイルは session id を含むため cwd=anchor の複数セッションでも互いに上書きしない（`un-gcu`）
 - 2節スキーマ・タグ書式・carry-forward の実体は `scripts/lib/working-memory.sh`（SSOT）

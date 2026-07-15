@@ -8,7 +8,7 @@
 |--------|------|
 | `/session:spawn` | 新しい tmux ウィンドウで Claude Code を起動（コンテキスト非継承、`--worktree` 対応）。完了監視はデフォルト ON |
 | `/session:fork` | 現在のセッションを fork（会話履歴を継承して並行実行）。完了監視はデフォルト ON |
-| `/session:ready-compaction` | `/compact` 前に「命令・状態」を carrier 別に振り分け外部化（policy router）。effort 一時層を退避＋carry-forward し、フックで圧縮後に自動復元（opt-in） |
+| `/session:ready-compaction` | context cycle（`/clear`・respawn）前に「命令・状態」を carrier 別に振り分け外部化（policy router）。effort 一時層を退避＋carry-forward。auto-compact 発火（incident）時はフックが自動復元（opt-in） |
 | `/session:enforce` | `[hard候補]` 命令を PreToolUse(Bash) hook が deny-block する gate へ昇格（認可専用。LLM 提案 → 人間確定）。policy 存在で opt-in |
 
 spawn/fork は起動後、spawn 元セッションが Claude Code の Monitor / `run_in_background` で完了を監視し報告する（「投げっぱなし」で省略、「監視して」で途中経過も報告）。長時間・常駐の監視やマルチウィンドウ統括はこのプラグインの範囲外。
@@ -33,9 +33,9 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 
 状態・ロック・manifest は既定で `~/.local/{state,share}/claude-session/` 配下に作成される。`SESSION_STATE_DIR` / `SESSION_SHARE_DIR` / `WINDOW_MANIFEST_FILE` / `SESSION_LOCK_FILE` で変更できる。詳細は `CLAUDE.md` を参照。
 
-## compaction を生き延びる（ready-compaction）
+## context cycle を生き延びる（ready-compaction）
 
-`/session:ready-compaction` は `/compact`（会話圧縮）で**命令**を失わないための policy router。`/compact` が構造的に落とすのは「事実」でなく「ambient な命令（手法・計画の弧）」——これは事実の店では解けない。スキルは項目を **2 軸（適用範囲 × 強制）** で分類し、carrier 別に振り分ける:
+`/session:ready-compaction` は context cycle（`/clear`・respawn）で**命令**を失わないための policy router。意図的な cycle の正路は `/clear`（+ 各 project の resume 正路）または respawn で、手動 `/compact` は cycle 正路から廃止済み（裁定 SSOT = scriptorium top-spec §1.1・scribe protocol.md）。`/clear`・respawn は文脈を丸ごと捨て、auto-compact（発火は incident）の要約器も「事実」でなく「ambient な命令（手法・計画の弧）」を構造的に落とす——どちらも事実の店では解けない。スキルは項目を **2 軸（適用範囲 × 強制）** で分類し、carrier 別に振り分ける:
 
 - **恒久命令**（このリポで常に真）→ **プロジェクト CLAUDE.md(git)** へ昇格提案（提案のみ。グローバル CLAUDE.md は対象外）
 - **横断/インシデントの事実・教訓** → doobidoo MCP に保存
@@ -43,9 +43,9 @@ private repo の場合は `gh auth login` 済み、または `GITHUB_TOKEN` / `G
 - **discrete・永続タスク**（セッション/effort を越えて残す作業）→ **beads（`bd create`）で issue 化**を誘導。Working Memory「計画弧」は bd issue ID 参照に留め内容を重複させない（bd 未導入リポは Working Memory にフォールバック）
 - **hard 候補**（gate を持ち歪みを許せない命令）→ working-file に `[hard候補]` でマーク → `/session:enforce` で gate 昇格（実強制は PreToolUse hook）
 
-付随する PreCompact / PostCompact / SessionStart(compact) フック（`hooks/hooks.json`）が圧縮の前後で退避・復元と命令の carry-forward を自動化する。これらは **opt-in**: `.claude-session/.compaction-enabled` マーカーがあるプロジェクトでのみ発火する（スキル初回実行時に自動作成、他プロジェクトでは no-op）。
+付随する PreCompact / PostCompact / SessionStart(compact) フック（`hooks/hooks.json`）は **auto-compact 発火（incident）時の復元安全網**——圧縮の前後で退避・復元と命令の carry-forward を自動化する非常用パラシュートとして残置している（意図的 cycle ではこの経路を使わない）。これらは **opt-in**: `.claude-session/.compaction-enabled` マーカーがあるプロジェクトでのみ発火する（スキル初回実行時に自動作成、他プロジェクトでは no-op）。
 
-加えて SessionStart(clear) フック（`session-start-clear.sh`）が、`/compact` ではなく **`/clear`（文脈の完全リセット）してから Working Memory を読み込んで再開**する運用の安全網になる。`/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**（「退避ファイルあり: `<path>`。続きなら Read してください」）だけを出す——`cat` 自動注入も `consumed` への mv も行わない（PostCompact の自動復元とは責務が違う）。厳密な session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で**全件列挙**してフォールバックする。`/clear` は session_id を変える（実測 verified）ため `/clear` 後は厳密一致が必ず空振りし、**この全件列挙フォールバックが復帰の主経路**になる（最新 1 件だけ出すと自分の古い退避ファイルが並走セッションのファイルに隠れるため全件出す）。フォールバック時の候補は **cwd を共有する別セッション由来の可能性もある**ため、原因を断定せず「別セッション由来、または sid が変わった自セッションのファイルの可能性」と正直に提示し、読むか否かはユーザー判断に委ねる（read-only ゆえ上書き破壊は起こさない）。設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節。
+SessionStart(clear) フック（`session-start-clear.sh`）は **`/clear`（意図的 cycle の主経路）後の復帰導線**。復元の本線は各 project が提供する resume 正路（scribe 系 = `/scribe:resume` 等）で、resume 未導入 project はこのフックが出すポインタから手動 Read でフォールバックする。`/clear` 後の新コンテキストに退避ファイルへの **read-only ポインタ**（「退避ファイルあり: `<path>`。続きなら Read してください」）だけを出す——`cat` 自動注入も `consumed` への mv も行わない（PostCompact の自動復元とは責務が違う）。厳密な session id 一致が無ければ、非 consumed の退避ファイルを mtime 降順で**全件列挙**してフォールバックする。`/clear` は session_id を変える（実測 verified）ため `/clear` 後は厳密一致が必ず空振りし、**この全件列挙フォールバックが復帰の主経路**になる（最新 1 件だけ出すと自分の古い退避ファイルが並走セッションのファイルに隠れるため全件出す）。フォールバック時の候補は **cwd を共有する別セッション由来の可能性もある**ため、原因を断定せず「別セッション由来、または sid が変わった自セッションのファイルの可能性」と正直に提示し、読むか否かはユーザー判断に委ねる（read-only ゆえ上書き破壊は起こさない）。設計根拠は `architecture/compaction-memory-model.md`「/clear 経路の安全網」節。
 
 退避ファイルは **session-scoped**（`working-memory.<sid>.md`）。cwd=anchor の複数セッションが同一ファイルを奪い合う衝突（2026-06-09 実害）を構造的に根絶するため、ファイル名に session id を含める。session id は hook stdin の `.session_id`（一次）→ `CLAUDE_CODE_SESSION_ID` env（二次フォールバック）で解決し、解決不能なら legacy 非 scoped 名（`working-memory.md`・後方互換）へ落ちる。opt-in マーカーと log はプロジェクト共有なので session-scoped にしない。設計判断（自動移行はせず coexistence・consumed 連鎖も同一セッション内に閉じる）は `architecture/compaction-memory-model.md`。
 

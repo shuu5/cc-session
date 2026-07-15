@@ -1,5 +1,7 @@
 # ready-compaction 再設計（Phase-1 実装 + Phase-2 設計）
 
+> **注記（2026-07-15）**: 本書の運用前提（§4「~50% で手動 compact、今後もこの運用」・§5「Step 4 大筋維持」等）は cycle-first 裁定（orch-6srt: 意図的 cycle=/clear または respawn・手動 /compact 廃止・auto-compact 発火=incident）で改訂済み。本書は当時の設計判断記録として本文不変で保存する（現行 framing は `skills/ready-compaction/SKILL.md` と `compaction-memory-model.md` を参照）。
+
 > **このドキュメントの役割**: ubuntu-note-system 側の設計セッション（grill-me）で確定した
 > ready-compaction スキルの再設計を、cc-session の実装セッションへ verbatim で引き継ぐためのハンドオフ。
 > 設計の**決定とその根拠**を完全収録しているので、実装にあたり再議論は不要。

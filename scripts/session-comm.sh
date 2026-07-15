@@ -651,7 +651,9 @@ cmd_inject_file() {
     # （Loading…/Starting…/Initializing…/Connecting…/Baking… 等）にも一致し、boot 中に 2 連続で
     # 偽成立して RESIDUAL 分岐へ到達する前に偽受理する（live e2e で実測再現・ccs-mxv）。
     # TURN_SPINNER_PATTERN は行頭 glyph + '(' 経過タイマーまで要求する厳格形状のため boot 語彙
-    # （インデント無しでもタイマー無し）とは一致しない。
+    # とは一致しない（live boot 標本 100 frames〔~20s・実 MCP 設定込み・2026-07-15〕で一致ゼロ・
+    # glyph+gerund+… 形も括弧タイマー行も出現ゼロを verified＝「boot はタイマー括弧を出さない」は
+    # 主張でなく実測）。
     # scribe sc-8g5 が busy-regex の再利用を拒否した判断と同根。
     # SSOT を subshell source する流儀は上の _se_dialog_re と同一・失敗時は既知良好リテラルへ fail-closed。
     local _rb_strong_re=''
@@ -755,6 +757,11 @@ cmd_inject_file() {
         # 見えているケースで新規 echo を検出するため。
         _rb_multiline=false
         if [[ "$(grep -c '' "$file_path" 2>/dev/null || echo 0)" -ge 2 ]]; then _rb_multiline=true; fi
+        # baseline 側は意図的に full-pane（interior 含む）で数える: outside 限定にすると
+        # 「baseline の入力欄に居た残留 placeholder が transcript へ移動しただけ」を新規 echo と
+        # 誤カウントし fail-open（偽受理）を招く。full-pane baseline は閾値を上げる方向にしか
+        # 働かない＝fail-closed（取りこぼしは budget→再送＝二重投入側の既定トレードオフに合流）。
+        # 対称化リファクタ禁止（cell-quality wf_e6b1331d の adversarial 検証で有害と確認済み）。
         _rb_ph_base=0
         if $_rb_multiline; then
             _rb_ph_base=$(printf '%s' "$_rb_baseline" | grep -cE -- "$_RB_PASTE_PLACEHOLDER_RE") || _rb_ph_base=0

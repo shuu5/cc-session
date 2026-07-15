@@ -438,6 +438,18 @@ if tmux has-session -t "=$TARGET_SESSION" 2>/dev/null; then
     tmux new-window -t "=$TARGET_SESSION:" -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
 else
     tmux new-session -d -s "$TARGET_SESSION" -n "$WINDOW_NAME" "bash '$LAUNCHER'; rm -f '$LAUNCHER'"
+    # hold（番兵）window の常設（orch-oktg）: tmux は window 0 枚の session を許さず、最後の window の
+    # kill-window は session ごと破棄する（remain-on-exit は明示 kill に無力・isolated socket 実測
+    # 2026-07-15）。window 1 枚運用では respawn（kill-window → 再 spawn）のたびに session 消滅 →
+    # attach client 蹴り出し + 宛先 'session:window' 断絶が起きるため、session 新規作成時に番兵を
+    # 同時生成して構造的に防ぐ。-d で focus を奪わず、名前は素 'hold'（liveness 正準形
+    # ':(wt-|admin-|admin$)'・fleet-monitor 完全一致・delivery-observe ':admin' のいずれにも非一致＝
+    # 監視系の誤検出なし）。既に hold が居れば作らない（idempotent）。生成失敗は spawn 全体を失敗
+    # させない（番兵は hardening・本体 window は生成済み）が、黙殺せず警告を出す。
+    if ! tmux list-windows -t "=$TARGET_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF hold; then
+        tmux new-window -d -t "=$TARGET_SESSION:" -n hold 'exec sleep infinity' \
+            || echo "Warning: hold window を生成できませんでした（session '$TARGET_SESSION' は最後の kill-window で消滅しえます）" >&2
+    fi
 fi
 exec 200>&-  # ロック解放
 

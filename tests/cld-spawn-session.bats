@@ -149,7 +149,10 @@ _run_spawn() {
     [ "$status" -eq 0 ]
     grep -q "tmux new-session -d -s proj -n cld-spawn-test" "$TMUX_LOG" \
         || { echo "log: $(cat "$TMUX_LOG")"; false; }
-    ! grep -q "tmux new-window" "$TMUX_LOG"
+    # 本体 window は new-session の初期 window として生成される（new-window は使わない）。
+    # new-session 時に併設される hold（番兵）window の new-window は例外（orch-oktg・
+    # 検証は cld-spawn-hold-window.bats）。
+    ! grep -q "tmux new-window.*-n cld-spawn-test" "$TMUX_LOG"
 }
 
 @test "session: 再利用探索が --session の session スコープで呼ばれる" {

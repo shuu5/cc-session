@@ -735,7 +735,11 @@ cmd_inject_file() {
         _rb_baseline=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
         # 空/空白のみ prompt では grep が no-match で exit 1 → set -euo pipefail 下で代入行が abort し
         # paste 前に silent 失敗する。baseline 行と対称に `|| true` で吸収する（空 sentinel は下で無効化）。
-        _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-24 || true)
+        # 24 字への切詰は bash substring（文字単位・UTF-8 safe）で行う。cut -c は GNU では byte 単位の
+        # ため、日本語等の multibyte 先頭行を文字境界で破断し「pane に絶対一致しない sentinel」を作る
+        # ＝(B) が盲目化し vanished 誤診→再送重複の残存経路になっていた（live e2e で xxd 実証・ccs-pwr）。
+        _rb_sentinel=$(grep -m1 -v '^[[:space:]]*$' "$file_path" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+        _rb_sentinel="${_rb_sentinel:0:24}"
         if [[ "${#_rb_sentinel}" -lt 8 ]]; then _rb_sentinel=""; fi  # 短い先頭行は誤一致回避でスキップ
         # tail marker（ccs-mxv・scribe _derive_marker 同型）: 最終非空行の末尾 24 字＝cursor が座る箇所。
         # 入力欄 interior の RESIDUAL 検出は末尾側が可視になりやすい（長文は先頭が隠れる）ため head と併用する。

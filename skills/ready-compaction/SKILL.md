@@ -157,7 +157,7 @@ emit_working_memory "$(date -u +%Y-%m-%dT%H:%M:%SZ)" manual "$WORKING_MEMORY_CON
 ✓ opt-in 有効化済み（このプロジェクトで compaction フックが発火します）
 >>> 退避完了。`/clear`（推奨）または respawn（plugin 変更後）で cycle してください。
     /clear 後の復元は各 project が提供する resume 正路で行います（scribe 系 project は
-    /scribe:resume・orchestrator は /scriptorium:orch-resume・resume 未導入 project は
+    /scribe:rebrief・orchestrator は /scriptorium:orch-resume・resume 未導入 project は
     SessionStart(clear) が出す Working Memory ポインタから手動 Read でフォールバック）
 ```
 

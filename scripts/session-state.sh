@@ -26,6 +26,15 @@ PROMPT_PATTERN='❯[[:space:]]'
 # 進行形インジケータを input-waiting 判定より先に評価して #708 false positive を防ぐ。
 # 過去形(例 "Baked for 8m" = 完了表示)は (in'|ing) に一致しないため processing 扱いされない。
 THINKING_PROGRESS_PATTERN='[\p{Lu}][\p{Ll}]+(in'"'"'|ing)(…|\.{3}| for [0-9]| \([0-9])'
+# 現行 TUI (2026-07 系) の turn 進行スピナー行シグネチャ（ccs-pwr・read-back 強マーカーと共用 SSOT）。
+# 形状: 行頭 glyph（非英数・非空白 1 字）+ 空白 + 大文字始まり gerund + …/... + ' (' + 経過タイマー
+# （実測標本: '✽ Boondoggling… (6m 16s · ↓ 23.2k tokens)'）。
+# 行頭アンカーが要: transcript 本文・tool 出力はインデントされ、assistant 応答行（● + 文）は語直後に
+# … が来ず、agent 一覧行（◯ name  desc…  Ns · ↓ tokens）はタイマーが '(' に包まれない——いずれも
+# 一致しない（live 標本 3 種で検証・2026-07-15）。スピナー行は Tip 行の折返し等で tail -8 の外へ
+# 押し出されるため、この判定だけは capture 全域（-S -20）に適用する（tail -8 依存が「turn 走行中を
+# input-waiting と誤報する」偽陰性の機序だった＝orch-8rn8 evidence）。
+TURN_SPINNER_PATTERN='^[^[:alnum:][:space:]] [\p{Lu}][\p{Ll}]+(…|\.{3}) \(([0-9]+h )?([0-9]+m )?[0-9]+s'
 # approval UI / AskUserQuestion パターン（tail -5 全体スキャン対象）
 INPUT_WAITING_PATTERNS=(
     'Enter to select'        # Claude Code 選択 UI
@@ -191,15 +200,17 @@ detect_state() {
             return
         fi
     done
-
-    # input-waiting: プロンプトパターンが last_lines のいずれかの行にある
-    # Claude Code TUI は capture-pane で UTF-8 バイト列を返すため、
-    # ❯ (U+276F) の直接マッチを tail -5 全体に対して適用する
-    if echo "$last_lines" | grep -qP "$PROMPT_PATTERN"; then
-        echo "input-waiting"
+    # 現行 TUI のスピナー行（capture 全域）: Tip 行折返し等でスピナーが tail -8 の外へ押し出されると、
+    # 上の 2 判定を素通りして下の ❯/bypass 判定が「turn 走行中なのに input-waiting」を返していた
+    # （実測 verified・ccs-pwr / orch-8rn8 偽陰性の機序）。行頭 glyph アンカーの厳格形状のみ全域を許す。
+    if echo "$captured" | grep -qP "$TURN_SPINNER_PATTERN"; then
+        echo "processing"
         return
     fi
-    # approval UI / AskUserQuestion パターンを tail -5 全体に対してスキャン
+
+    # approval UI / AskUserQuestion パターンを tail -5 全体に対してスキャン。
+    # 素の ❯ 判定より先に評価する: ダイアログは turn を中断して入力を要求する実体なので、
+    # 入力欄の有無に依らず input-waiting が正しい（評価順は ccs-pwr で是正・ダイアログ > turn 証拠 > ❯/bypass）。
     local _iw_pattern
     for _iw_pattern in "${INPUT_WAITING_PATTERNS[@]}"; do
         if echo "$last_lines" | grep -qP "$_iw_pattern"; then
@@ -207,15 +218,25 @@ detect_state() {
             return
         fi
     done
-    # フォールバック: TUI のステータスバーパターンで状態を検出
-    # "bypass permissions" → 権限承認プロンプト（genuinely input-waiting）
-    if echo "$last_lines" | grep -q "bypass permissions"; then
+    # "esc to interrupt" → LLM 実行中（processing の証拠・旧 TUI 後方互換）。
+    # ❯/bypass より先に評価する（ccs-pwr）: ❯ 入力欄と bypass ステータスバーは turn 実行中も
+    # 常時表示されるため、turn 証拠が見えている限り input-waiting へ落としてはならない。
+    if echo "$last_lines" | grep -q "esc to interrupt"; then
+        echo "processing"
+        return
+    fi
+    # input-waiting: プロンプトパターンが last_lines のいずれかの行にある
+    # Claude Code TUI は capture-pane で UTF-8 バイト列を返すため、
+    # ❯ (U+276F) の直接マッチを tail -5 全体に対して適用する
+    if echo "$last_lines" | grep -qP "$PROMPT_PATTERN"; then
         echo "input-waiting"
         return
     fi
-    # "esc to interrupt" → LLM 実行中（processing の証拠）
-    if echo "$last_lines" | grep -q "esc to interrupt"; then
-        echo "processing"
+    # フォールバック: TUI のステータスバーパターンで状態を検出
+    # "bypass permissions" → --dangerously-skip-permissions 時に常時表示されるステータスバー。
+    # turn 証拠（上の各 processing 判定）がどれも見えないときの最後の input-waiting 根拠。
+    if echo "$last_lines" | grep -q "bypass permissions"; then
+        echo "input-waiting"
         return
     fi
 

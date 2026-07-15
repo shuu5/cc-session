@@ -639,20 +639,28 @@ cmd_inject_file() {
         _se_dialog_re='Enter to select|↑/↓ to navigate|承認しますか|確認しますか|Do you want to|\[y/N\]|\[Y/n\]|Type something|Waiting for user input'
     fi
 
-    # 強 processing マーカー（ccs-mxv）: detect_state の既定 fallthrough は processing（パターン不在の
-    # 残余クラス）のため、state==processing は「turn 実行中」の積極証拠にならない（boot splash も
-    # processing と読める）。受理に使えるのは **turn 固有**のマーカーのみ:
-    #   - esc to interrupt（実行中 turn の中断 UI・boot では出ない）
+    # 強 processing マーカー（ccs-mxv → ccs-pwr で TUI ドリフト追随）: detect_state の既定 fallthrough は
+    # processing（パターン不在の残余クラス）のため、state==processing は「turn 実行中」の積極証拠に
+    # ならない（boot splash も processing と読める）。受理に使えるのは **turn 固有**のマーカーのみ:
+    #   - TURN_SPINNER_PATTERN（現行 TUI のスピナー行・行頭 glyph + gerund… + 経過タイマー。
+    #     SSOT=session-state.sh。現行 TUI は 'esc to interrupt' を表示しない——2026-07-15 の走行中
+    #     pane 実測で不在を verified＝旧マーカー単独では (A) が構造的に死んでいた・ccs-pwr）
+    #   - esc to interrupt（旧 TUI の中断 UI・後方互換で維持）
     #   - compaction フェーズ名（COMPACTION_INDICATORS・SSOT=session-state.sh 経由）
     # THINKING_PROGRESS_PATTERN は**使わない**——英語進行形+省略記号の汎用形は boot スピナー語彙
     # （Loading…/Starting…/Initializing…/Connecting…/Baking… 等）にも一致し、boot 中に 2 連続で
     # 偽成立して RESIDUAL 分岐へ到達する前に偽受理する（live e2e で実測再現・ccs-mxv）。
+    # TURN_SPINNER_PATTERN は行頭 glyph + '(' 経過タイマーまで要求する厳格形状のため boot 語彙
+    # （インデント無しでもタイマー無し）とは一致しない。
     # scribe sc-8g5 が busy-regex の再利用を拒否した判断と同根。
     # SSOT を subshell source する流儀は上の _se_dialog_re と同一・失敗時は既知良好リテラルへ fail-closed。
     local _rb_strong_re=''
     _rb_strong_re=$(
         source "${SCRIPT_DIR}/session-state.sh" 2>/dev/null || exit 0
         _p="esc to interrupt"
+        if [[ -n "${TURN_SPINNER_PATTERN:-}" ]]; then
+            _p="${_p}|${TURN_SPINNER_PATTERN}"
+        fi
         if [[ -n "${COMPACTION_INDICATORS+x}" ]] && [[ "${#COMPACTION_INDICATORS[@]}" -gt 0 ]]; then
             IFS='|'
             _p="${_p}|${COMPACTION_INDICATORS[*]}"
@@ -660,7 +668,7 @@ cmd_inject_file() {
         printf '%s' "$_p"
     ) || _rb_strong_re=''
     if [[ -z "$_rb_strong_re" ]]; then
-        _rb_strong_re='esc to interrupt|Compacting|Snapshotting|Externalizing|Restoring|Summarizing'
+        _rb_strong_re='esc to interrupt|^[^[:alnum:][:space:]] [\p{Lu}][\p{Ll}]+(…|\.{3}) \(([0-9]+h )?([0-9]+m )?[0-9]+s|Compacting|Snapshotting|Externalizing|Restoring|Summarizing'
     fi
 
     local target
@@ -722,7 +730,7 @@ cmd_inject_file() {
     # baseline = paste 前の画面。sentinel = prompt 先頭非空行の先頭 24 字（pane 折返しに耐えるよう短め）。
     # 「sentinel が paste 後に出現し baseline には無い」を持続シグナルとして使い、processing が一瞬で
     # 終わる fast-complete でも受理を取りこぼさない（false-negative→cld-spawn 再送による二重投入の防止）。
-    local _rb_baseline="" _rb_sentinel="" _rb_tail_marker=""
+    local _rb_baseline="" _rb_sentinel="" _rb_tail_marker="" _rb_multiline=false _rb_ph_base=0
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
         _rb_baseline=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
         # 空/空白のみ prompt では grep が no-match で exit 1 → set -euo pipefail 下で代入行が abort し
@@ -735,6 +743,18 @@ cmd_inject_file() {
         _rb_tail_marker="${_rb_tail_marker%"${_rb_tail_marker##*[![:space:]]}"}"
         if [[ "${#_rb_tail_marker}" -gt 24 ]]; then _rb_tail_marker="${_rb_tail_marker: -24}"; fi
         if [[ "${#_rb_tail_marker}" -lt 8 ]]; then _rb_tail_marker=""; fi
+        # 複数行 prompt フラグ + baseline の paste placeholder 行数（ccs-pwr・(B') 用）。
+        # TUI は複数行 paste を入力欄でも transcript でも '[Pasted text #N +M lines]' placeholder に
+        # 折りたたむ＝submit 後も本文 sentinel は pane に原理的に現れない。(B') は「outside view の
+        # placeholder 行数が baseline より増えた」ことを transcript への新規 echo＝submit の積極証拠
+        # として使う。行数比較（存在比較でない）のは、baseline に過去 paste の placeholder が既に
+        # 見えているケースで新規 echo を検出するため。
+        _rb_multiline=false
+        if [[ "$(grep -c '' "$file_path" 2>/dev/null || echo 0)" -ge 2 ]]; then _rb_multiline=true; fi
+        _rb_ph_base=0
+        if $_rb_multiline; then
+            _rb_ph_base=$(printf '%s' "$_rb_baseline" | grep -cE -- "$_RB_PASTE_PLACEHOLDER_RE") || _rb_ph_base=0
+        fi
     fi
 
     # --clear-first: 再送時に入力欄へ残る部分 paste を C-u でクリアし、再 paste の重複を防ぐ（ccs-ldt）。
@@ -865,6 +885,9 @@ cmd_inject_file() {
     #   (B) echo-outside-interior: sentinel が入力欄 interior の**外**（transcript）に出現 ∧ baseline に
     #       不在＝submit されて会話履歴に載った証拠。fast-complete / post-submit ダイアログの
     #       false-negative（→再送二重投入）を防ぐ。
+    #   (B') folded-paste echo（ccs-pwr）: 複数行 paste は transcript echo も placeholder 表示のため
+    #       (B) が構造的に盲目になる。outside view の placeholder 行数が baseline より増えたことを
+    #       新規 echo＝submit の積極証拠として受理する（vanished 誤診より先に評価）。
     # 非受理側:
     #   - RESIDUAL（interior に head sentinel / tail marker / paste placeholder）＝「未 submit」の積極証明
     #     → 有界（_se_max）の救済 Enter で submit を flush（un-iur の折りたたみ吸収救済を包含）。
@@ -875,11 +898,11 @@ cmd_inject_file() {
     #     → 早期 fail（budget を待たず exit 4）→ 呼出側（cld-spawn）が --clear-first で再送。
     #   - error/exited 2 連続＝未着確定（単発の transient 誤判定は無視・ccs-e0i item3 不変）。
     #   - budget 失効＝未着（exit 4）。
-    # 既知の限界（旧実装から不変）: 折りたたみ paste（transcript echo も placeholder 表示）かつ強
-    # processing を観測できないほど高速完了する prompt では false-negative→再送で二重投入の余地が残る
-    # （spawn の実タスクでは非現実的・安全側＝silent 消失より二重投入を選ぶ）。
+    # 既知の限界: 折りたたみ paste は (B') が塞いだ（ccs-pwr）。残る余地は「baseline に placeholder が
+    # 可視 ∧ submit と同時に旧 placeholder が scroll out して行数が増えない」極端な競合のみで、その場合も
+    # budget 失効→再送＝二重投入側に倒れる（安全側＝silent 消失より二重投入を選ぶ・旧実装から不変の方針）。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline
+        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline _rb_ph_out=0
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
@@ -954,10 +977,26 @@ cmd_inject_file() {
                                    && ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_sentinel"; then
                                     _rb_ok=true; break
                                 fi
+                                # (B') folded-paste echo（ccs-pwr）: 複数行 paste は submit 後の transcript にも
+                                # 本文でなく placeholder（[Pasted text #N +M lines]）が載る＝(B) の sentinel は
+                                # 原理的に outside へ現れず、(B) 単独では折りたたみ paste の submit を観測できない
+                                # （→ 下の vanished が「消失」と誤診し早期 exit 4 → 呼出側再送 → 実 submit 済み
+                                # prompt の重複投入。orch-8rn8 偽陰性 2026-07-15 の実測機序）。outside view の
+                                # placeholder 行数が baseline より**増えた**ことを新規 echo＝submit の積極証拠と
+                                # して受理する。vanished 判定より必ず先に評価する（受理が誤診に先行する）。
+                                if $_rb_multiline; then
+                                    _rb_ph_out=$(printf '%s' "$_rb_scan" | grep -cE -- "$_RB_PASTE_PLACEHOLDER_RE") || _rb_ph_out=0
+                                    if [[ "${_rb_ph_out:-0}" -gt "$_rb_ph_base" ]]; then
+                                        _rb_ok=true; break
+                                    fi
+                                fi
                                 # vanished: 入力欄は空で prompt が pane から全消失＝boot 再描画で paste が
                                 # 飲まれた。2 連続で早期 fail し呼出側の再送を早める（INCONCLUSIVE=cls2 は
                                 # ダイアログ等が interior を占める場合で、budget 失効に委ねる＝再送が
                                 # ダイアログへ paste する事故を急がせない）。
+                                # 複数行 paste でも本判定は残す: 真の消失（placeholder が interior にも outside
+                                # にも無い）は上の (B') が受理しないまま sentinel 不在でここへ来る＝boot-race の
+                                # 早期再送は維持される。submit 済みなら (B')/(A) が先に受理して到達しない。
                                 if [[ "$_rb_cls" -eq 0 ]] && [[ -n "$_rb_sentinel" ]] \
                                    && ! printf '%s' "$_rb_pane" | grep -qF -- "$_rb_sentinel"; then
                                     _rb_vanish_streak=$(( _rb_vanish_streak + 1 ))

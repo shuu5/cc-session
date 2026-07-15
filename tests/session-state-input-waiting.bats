@@ -183,9 +183,23 @@ esc to interrupt"
     [[ "$output" == "processing" ]]
 }
 
-@test "detect_state: bypass permissions + esc to interrupt 同時表示 → input-waiting (bypass 優先)" {
+# ccs-pwr で expectation を反転: 旧テストは「bypass 優先 → input-waiting」を pin していたが、
+# 'bypass permissions' は --dangerously-skip-permissions の**常時表示ステータスバー**であり
+# ダイアログ識別子ではない（session-comm.sh の modality ガード注記で既に是正済みの誤解）。
+# 'esc to interrupt' は turn 実行中にのみ表示される積極証拠のため、両方可視なら processing が正しい。
+# 旧 expectation のままだと turn 走行中の bypass セッションを input-waiting と誤報し、
+# read-back 偽陰性→再送重複（orch-8rn8 実測 2026-07-15）の一因になる。
+@test "detect_state: bypass permissions + esc to interrupt 同時表示 → processing (ccs-pwr 是正: esc は turn 証拠・bypass は常時表示)" {
     run_detect_state_with_capture \
 "bypass permissions · esc to interrupt"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}
+
+@test "detect_state: ダイアログ (Do you want to) + esc to interrupt 同時 → input-waiting (ダイアログ優先は維持)" {
+    run_detect_state_with_capture \
+"Do you want to proceed?
+esc to interrupt"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "input-waiting" ]]
 }
@@ -228,6 +242,71 @@ esc to interrupt"
 ──────────────────────────────
   shuu5@host 0% 0/1M Opus 4.7 [max]
   ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}
+
+# ---------------------------------------------------------------------------
+# ccs-pwr: 現行 TUI (2026-07 系) の turn 走行中誤分類の根治
+# 実測標本 (2026-07-15・orch-8rn8 偽陰性の機序): 現行 TUI は 'esc to interrupt' を
+# 表示せず、スピナー行が Tip 行の折返し等で tail -8 の外へ押し出されると、
+# ❯/bypass 判定が「turn 走行中なのに input-waiting」を返していた。
+# ---------------------------------------------------------------------------
+@test "detect_state: 現行 TUI スピナーが tail -8 の外（Tip 折返し）でも → processing (ccs-pwr 実測回帰)" {
+    run_detect_state_with_capture \
+"✽ Boondoggling… (6m 16s · ↓ 23.2k tokens)
+  ⎿ · Tip: Use /btw to ask a quick side question without interrupting
+     Claude's current work
+──────────────────────────────
+❯
+──────────────────────────────
+  shuu5@ipatho-server-2 (user@example.com)  cc-session  main*
+  17% 170k/1M Fable 5 [xhigh] 5h:6%(3h18m) 7d:22%(1d6h)
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}
+
+@test "detect_state: 現行 TUI スピナー行のみ（esc to interrupt 不在）→ processing (TUI ドリフト追随)" {
+    run_detect_state_with_capture \
+"✢ Simmering… (8m 0s · ↓ 24.9k tokens)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "processing" ]]
+}
+
+# agent 一覧行はインデントされ（行頭 glyph アンカー不成立）タイマーも '(' に包まれない
+# ＝スピナーと誤認しない（orchestrator pane の live 標本 2026-07-15 で検証した誤爆封鎖）
+@test "detect_state: agent 一覧行（◯ name … Ns · ↓ tokens）はスピナー扱いしない → input-waiting" {
+    run_detect_state_with_capture \
+"  ● main
+  ◯ claude-code-guide  Claude Code 予測機能の無…  1m 54s · ↓ 63.8k tokens
+──────────────────────────────
+❯
+──────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "input-waiting" ]]
+}
+
+# 過去形完了表示は現行 TUI 形式でも input-waiting のまま（タイマー '(' 無し・ellipsis 無し）
+@test "detect_state: 現行 TUI 完了表示 (● Boondoggled for 8m) + 入力欄 → input-waiting" {
+    run_detect_state_with_capture \
+"● Boondoggled for 8m 25s
+──────────────────────────────
+❯
+──────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "input-waiting" ]]
+}
+
+# 評価順是正の pin: ❯（trailing space 付き＝PROMPT_PATTERN 一致形）より esc が先に評価される
+@test "detect_state: esc to interrupt + ❯（空入力欄）→ processing (評価順: turn 証拠 > ❯・ccs-pwr)" {
+    run_detect_state_with_capture \
+"──────────────────────────────
+❯ 
+──────────────────────────────
+esc to interrupt"
     [[ "$status" -eq 0 ]]
     [[ "$output" == "processing" ]]
 }

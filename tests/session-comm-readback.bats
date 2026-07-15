@@ -458,3 +458,71 @@ STATE_EOF
     [ "$status" -eq 4 ]
     [ "$(_enter_count)" -ge 2 ]
 }
+
+# =============================================================================
+# ccs-pwr: TUI ドリフト根治（orch-8rn8 偽陰性 2026-07-15 の実測反映）
+#   - 現行 TUI は turn 実行中に 'esc to interrupt' を表示しない（スピナー行が唯一の turn 証拠）
+#   - 複数行 paste は transcript echo も placeholder 表示＝(B) が構造的に盲目 → (B') で受理
+# =============================================================================
+
+# 現行 TUI の実 turn pane（スピナー行 + Type A 入力欄 + 常時ステータスバー。esc to interrupt 不在）
+CUR_TUI_PANE=$'✽ Boondoggling… (1m 2s · ↓ 3.4k tokens)\n──────────────\n❯ \n──────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+
+@test "read-back: 現行 TUI スピナー行（esc to interrupt 不在）2 連続で受理＝exit 0（A・TUI ドリフト追随）" {
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE="$CUR_TUI_PANE"
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]
+}
+
+@test "read-back: 折りたたみ paste の transcript placeholder echo（baseline 超過）で受理＝exit 0（B'）" {
+    printf 'line one alpha beta gamma\nline two delta epsilon\n' > "$SANDBOX/prompt-ml.txt"
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE=$'❯ [Pasted text #1 +2 lines]\n'"$EMPTY_BOX"
+    run bash "$COMM" inject-file "session:0" "$SANDBOX/prompt-ml.txt" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 0 ]
+}
+
+@test "boot-race pin: placeholder が interior 残留のみ（未 submit）では B' 受理しない＝RESIDUAL 経路維持" {
+    printf 'line one alpha beta gamma\nline two delta epsilon\n' > "$SANDBOX/prompt-ml.txt"
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE=$'╭──────────────╮\n│ ❯ [Pasted text #1 +2 lines] │\n╰──────────────╯'
+    run bash "$COMM" inject-file "session:0" "$SANDBOX/prompt-ml.txt" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+}
+
+@test "boot-race pin: baseline に既にある placeholder では B' 受理しない（行数超過が必須）" {
+    printf 'line one alpha beta gamma\nline two delta epsilon\n' > "$SANDBOX/prompt-ml.txt"
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=$'❯ [Pasted text #1 +9 lines]\n'"$EMPTY_BOX"
+    export MOCK_PANE=$'❯ [Pasted text #1 +9 lines]\n'"$EMPTY_BOX"
+    run bash "$COMM" inject-file "session:0" "$SANDBOX/prompt-ml.txt" --wait 5 --confirm-receipt 2
+    [ "$status" -eq 4 ]
+}
+
+@test "read-back: 複数行 paste の真の消失（placeholder どこにも無し）は早期 fail 維持＝exit 4（boot-race 再送を遅らせない）" {
+    printf 'line one alpha beta gamma\nline two delta epsilon\n' > "$SANDBOX/prompt-ml.txt"
+    export MOCK_STATE=input-waiting
+    export MOCK_BASELINE=""
+    export MOCK_PANE="$EMPTY_BOX"
+    local _t0 _t1
+    _t0=$(date +%s)
+    run bash "$COMM" inject-file "session:0" "$SANDBOX/prompt-ml.txt" --wait 5 --confirm-receipt 10
+    _t1=$(date +%s)
+    [ "$status" -eq 4 ]
+    # vanish 2 連続の早期 fail＝budget(10s) を待たない
+    [ $(( _t1 - _t0 )) -lt 8 ]
+}
+
+@test "SSOT 同期: TURN_SPINNER_PATTERN が _rb_strong_re の fallback リテラルに含まれる（ccs-pwr drift fail-closed）" {
+    local real
+    real=$(bash -c "source '$SCRIPT_DIR/session-state.sh' >/dev/null 2>&1; printf '%s' \"\${TURN_SPINNER_PATTERN:-}\"")
+    [ -n "$real" ]
+    local fb
+    fb=$(grep -E "_rb_strong_re='esc to interrupt" "$SCRIPT_DIR/session-comm.sh" | head -1)
+    [ -n "$fb" ]
+    [[ "$fb" == *"$real"* ]]
+}

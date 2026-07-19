@@ -932,11 +932,18 @@ cmd_inject_file() {
         #   時にコード改変なく上書き可能にする。env が **set かつ空**なら queued 検知を無効化（＝旧挙動＝全て
         #   vanished→再送＝安全側）。既定 regex は複数の表示仮説を OR で束ね、boot 語彙（Loading/Starting/
         #   Initializing/Connecting 等）と衝突しない語のみで構成する（boot-race の queued 誤受容を語彙面でも排除）。
+        # ★高特異度句のみ（cell-quality wf_06c8b81e minor 対応・ccs-3bj）: 単独語 'queued'/'Queued' は running
+        #   turn が baseline 捕捉**後**に stream する散文にも出うる汎用語で、queued 積極証拠の唯一の実時間判別子
+        #   として弱い（baseline-newness ガードは baseline 時点の既存語しか除外せず post-baseline stream は素通し）。
+        #   fail-open（silent 消失＞二重投入 の不変量に反する偽 exit5）面を縮めるため既定は queue 固有の**複数語
+        #   フレーズのみ**に限定する。真の queued 表示が単独語だった場合でも未検出は安全側（vanished→再送）へ倒れ、
+        #   実表示は live e2e(Leg2) で確定して env 上書き→本体反映（follow-up）する。boot-race は saw_live_turn=0 で
+        #   既に構造除外済み。
         local _rb_queued_re
         if [[ -n "${SESSION_COMM_QUEUED_MARKER_RE+x}" ]]; then
             _rb_queued_re="$SESSION_COMM_QUEUED_MARKER_RE"   # set（空文字なら queued 検知 disable）
         else
-            _rb_queued_re='queued|Queued|will be sent|to be sent|pending message|message queued'
+            _rb_queued_re='message queued|messages queued|will be sent|to be sent|pending message'
         fi
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do

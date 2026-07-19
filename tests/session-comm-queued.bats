@@ -98,14 +98,25 @@ teardown() {
     [[ "$output" == *"queued"* ]]
 }
 
-@test "queued: 既定 regex（env 未指定）でも 'queued' 語を含むマーカーで受理＝exit 5" {
-    # env 上書きなし＝既定 _rb_queued_re（'queued|Queued|...'）で "prompt queued" が一致する仮説。
+@test "queued: 既定 regex（env 未指定）でも queue 固有フレーズを含むマーカーで受理＝exit 5" {
+    # env 上書きなし＝既定 _rb_queued_re（高特異度の複数語フレーズのみ）で "1 message queued" が一致する仮説。
+    # 単独語 'queued' は既定から除外済み（minor 対応）＝汎用語での偽 exit5 を語彙面でも縮める。
     export MOCK_BASELINE=""
     export MOCK_PANE="$STRONG_PANE"
     export MOCK_PANE_AFTER_N=3
-    export MOCK_PANE_AFTER=$'prompt queued (1)\n'"$EMPTY_BOX"
+    export MOCK_PANE_AFTER=$'1 message queued\n'"$EMPTY_BOX"
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 5 ]
+}
+
+@test "queued: 既定 regex は単独語 'queued' だけでは受理しない→exit 4（汎用語 fail-open 縮小・minor 対応）" {
+    # 単独語 'queued' を既定から外した回帰 pin。baseline 新規でも単独語では queued 不発→vanished→exit 4（安全側）。
+    export MOCK_BASELINE=""
+    export MOCK_PANE="$STRONG_PANE"
+    export MOCK_PANE_AFTER_N=3
+    export MOCK_PANE_AFTER=$'prompt queued (1)\n'"$EMPTY_BOX"  # 'queued' 単独語のみ・複数語フレーズ無し
+    run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
+    [ "$status" -eq 4 ]
 }
 
 @test "queued: 別の表示仮説 'will be sent' でも上書き regex 一致で受理＝exit 5" {

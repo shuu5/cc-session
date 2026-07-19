@@ -77,10 +77,15 @@ Exit codes (inject-file / --confirm-receipt read-back — SSOT of the delivery c
   4  未着(vanished) read-back が submit の積極証拠を得られず（真の消失/boot-race）。caller は再送する。
   5  queued        busy 宛先で paste が CC message queue に積まれ受理された積極証拠あり（ccs-3bj）。
                    caller は**再送禁止**（再送は重複 queue＝--clear-first では dequeue 不能）。
-                   検知は「live turn 観測 ∧ queued 固有 pane マーカー可視 ∧ sentinel 未 echo」の積極証拠
-                   のみで成立し、証拠不在なら 4 へ倒す（安全側＝silent 消失より二重投入）。queued 固有
-                   マーカーは SESSION_COMM_QUEUED_MARKER_RE で上書き可（空=queued 検知を無効化）。
-                   ※exit 3 は将来の busy 前 gate(a) 用に予約（本実装では未使用）。
+                   ★既定 OFF＝opt-in（GATE ROUND-1・2026-07-20）: SESSION_COMM_QUEUED_MARKER_RE を**非空 set**
+                   したときのみ本経路が有効。未 set / 空 set は queued 検知 OFF＝旧挙動（証拠不在→4→再送＝安全側）。
+                   opt-in 時の検知条件=「live turn 観測 ∧ queued マーカーが outside view に baseline 新規 echo
+                   ∧ sentinel 未 echo」の積極証拠のみ（証拠不在→4）。既定 OFF の理由: live e2e 実測で現行 TUI の
+                   queued 実表示は interior=『Press up to edit queued messages』で、本経路の位置前提（marker=
+                   outside ∧ interior 空）と逆＝regex 差替えだけでは有効化できず真陽性ゼロ（述語 rework は
+                   follow-up）。mid-busy paste は (A)/(B) が受理し重複ゼロを実測ゆえ既定 OFF は機能損失ゼロで
+                   fail-open（汎用語 default-on の偽 exit5=silent 消失）だけを除去する。実マーカー実測形は
+                   ccs-3bj notes 2026-07-20 参照。※exit 3 は将来の busy 前 gate(a) 用に予約（未使用）。
 
 Environment:
   SESSION_COMM_SUBMIT_ENTER_MAX  paste 後に未 submit（input-waiting 滞留）なら撃つ追い Enter の上限
@@ -927,24 +932,23 @@ cmd_inject_file() {
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
         local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline _rb_ph_out=0 _rb_saw_live_turn=0 _rb_queued=false _rb_queued_new=0 _rb_qline=""
         # queued 受理述語（ccs-3bj）: busy 宛先で paste が CC message queue に積まれたときの pane マーカー。
-        # ★表示形態は cell 内 live 未確認（description [uncertain]：dim 表示 / placeholder / 専用 glyph の
-        #   いずれか不明）。よって (1) 保守的な既定 regex を置き、(2) SESSION_COMM_QUEUED_MARKER_RE で live e2e
-        #   時にコード改変なく上書き可能にする。env が **set かつ空**なら queued 検知を無効化（＝旧挙動＝全て
-        #   vanished→再送＝安全側）。既定 regex は複数の表示仮説を OR で束ね、boot 語彙（Loading/Starting/
-        #   Initializing/Connecting 等）と衝突しない語のみで構成する（boot-race の queued 誤受容を語彙面でも排除）。
-        # ★高特異度句のみ（cell-quality wf_06c8b81e minor 対応・ccs-3bj）: 単独語 'queued'/'Queued' は running
-        #   turn が baseline 捕捉**後**に stream する散文にも出うる汎用語で、queued 積極証拠の唯一の実時間判別子
-        #   として弱い（baseline-newness ガードは baseline 時点の既存語しか除外せず post-baseline stream は素通し）。
-        #   fail-open（silent 消失＞二重投入 の不変量に反する偽 exit5）面を縮めるため既定は queue 固有の**複数語
-        #   フレーズのみ**に限定する。真の queued 表示が単独語だった場合でも未検出は安全側（vanished→再送）へ倒れ、
-        #   実表示は live e2e(Leg2) で確定して env 上書き→本体反映（follow-up）する。boot-race は saw_live_turn=0 で
-        #   既に構造除外済み。
-        local _rb_queued_re
-        if [[ -n "${SESSION_COMM_QUEUED_MARKER_RE+x}" ]]; then
-            _rb_queued_re="$SESSION_COMM_QUEUED_MARKER_RE"   # set（空文字なら queued 検知 disable）
-        else
-            _rb_queued_re='message queued|messages queued|will be sent|to be sent|pending message'
-        fi
+        # ★★既定 OFF＝opt-in（GATE ROUND-1 mandate・admin+live e2e 実測・ccs-3bj notes 2026-07-20）★★
+        #   本経路は SESSION_COMM_QUEUED_MARKER_RE を **非空 set** したときのみ有効。未 set / 空 set は共に
+        #   queued 検知 OFF＝旧挙動（証拠不在→vanished→exit4→再送＝安全側）へ戻る。
+        #   なぜ既定 OFF か（fail-open 除去・機能損失ゼロ）:
+        #     - live e2e 実測で現行 TUI の queued 実表示は **interior=『Press up to edit queued messages』**（本文
+        #       echo は入力欄の**上**＝outside）。本経路の成立条件（cls0=interior 空 ∧ marker が outside の新規
+        #       echo）とは**位置が逆**で、かつ従前の仮説既定 regex（message queued|will be sent 等）は語順も実表示に
+        #       一致しない＝**既定経路の真陽性はゼロ**。regex 差替えだけでは有効化できない（interior 配置に対応する
+        #       述語 rework は follow-up）。
+        #     - 一方で汎用英語句（will be sent / to be sent / pending message 等）を default-on にすると、baseline
+        #       捕捉**後**に running turn が stream した散文に一致し（baseline-newness ガードは baseline 時点の既存語
+        #       しか除外できない）× sticky saw_live_turn × 真の消失（cls0・sentinel 不在）の合流で **偽 exit5＝再送
+        #       禁止＝silent 消失**（不変量『silent 消失より二重投入』の反転＝fail-open）を可到達にする。
+        #     - mid-busy paste は現行 TUI では (A)/(B) が受理し重複ゼロを実測（非 busy・spawn 回帰も green）。
+        #   ゆえに既定 OFF は fail-open だけを除去し機能を落とさない。実マーカー live 確定後の opt-in 有効化は
+        #   SESSION_COMM_QUEUED_MARKER_RE の非空 set（env 上書き）で行う。boot-race は saw_live_turn=0 で構造除外済み。
+        local _rb_queued_re="${SESSION_COMM_QUEUED_MARKER_RE:-}"
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)

@@ -98,23 +98,29 @@ teardown() {
     [[ "$output" == *"queued"* ]]
 }
 
-@test "queued: 既定 regex（env 未指定）でも queue 固有フレーズを含むマーカーで受理＝exit 5" {
-    # env 上書きなし＝既定 _rb_queued_re（高特異度の複数語フレーズのみ）で "1 message queued" が一致する仮説。
-    # 単独語 'queued' は既定から除外済み（minor 対応）＝汎用語での偽 exit5 を語彙面でも縮める。
-    export MOCK_BASELINE=""
-    export MOCK_PANE="$STRONG_PANE"
+@test "GATE-R1 赤→緑 pin: 既定 OFF（env 未設定）× live turn × post-baseline 'will be sent' 散文 × sentinel 全 pane 不在（真の消失）→ exit 4（偽 exit5 封鎖）" {
+    # admin GATE ROUND-1 CONFIRMED の fail-open を封鎖する回帰 pin。旧（汎用語 default-on）: baseline 捕捉**後**に
+    # running turn が stream する散文に 'will be sent' が新規 echo される × sticky saw_live_turn × 真の消失
+    # （cls0・sentinel 全 pane 不在）の合流で偽 exit5（再送禁止＝silent 消失＝不変量反転）が可到達だった。
+    # fix: 既定 OFF（opt-in）で本経路が無効化され、真の消失は既存 vanished→exit4（再送＝安全側）へ倒れる。
+    export MOCK_BASELINE=""                                          # 'will be sent' は post-baseline の新規語
+    export MOCK_PANE="$STRONG_PANE"                                  # iter1: live turn 観測→saw_live_turn=1（sticky）
     export MOCK_PANE_AFTER_N=3
-    export MOCK_PANE_AFTER=$'1 message queued\n'"$EMPTY_BOX"
+    export MOCK_PANE_AFTER=$'the request will be sent to the model shortly\n'"$EMPTY_BOX"  # running turn の散文＋空 box・sentinel 不在
+    # ★env 未設定＝既定 OFF（SESSION_COMM_QUEUED_MARKER_RE を export しない）
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
-    [ "$status" -eq 5 ]
+    [ "$status" -eq 4 ]
 }
 
-@test "queued: 既定 regex は単独語 'queued' だけでは受理しない→exit 4（汎用語 fail-open 縮小・minor 対応）" {
-    # 単独語 'queued' を既定から外した回帰 pin。baseline 新規でも単独語では queued 不発→vanished→exit 4（安全側）。
+@test "opt-in pin: 既定 OFF では valid な queued マーカーが outside 新規 echo でも queued 不発→exit 4（GATE-R1 mandate1）" {
+    # env 未設定なら _rb_queued_re='' ＝本経路 OFF。queued 実表示様の marker が outside に新規 echo され live turn
+    # 観測済み・空 box・sentinel 未 echo でも、opt-in（env 非空 set）でない限り受理せず vanished→exit4（旧挙動＝
+    # 安全側）。「非空 set のときのみ有効」の不変量を pin する。
     export MOCK_BASELINE=""
     export MOCK_PANE="$STRONG_PANE"
     export MOCK_PANE_AFTER_N=3
-    export MOCK_PANE_AFTER=$'prompt queued (1)\n'"$EMPTY_BOX"  # 'queued' 単独語のみ・複数語フレーズ無し
+    export MOCK_PANE_AFTER=$'message queued\n'"$EMPTY_BOX"
+    # ★env 未設定＝既定 OFF
     run bash "$COMM" inject-file "session:0" "$PROMPT_FILE" --wait 5 --confirm-receipt 3
     [ "$status" -eq 4 ]
 }

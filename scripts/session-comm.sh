@@ -70,6 +70,18 @@ Subcommands:
                --clear-first              Send C-u before paste to clear stale input (for re-send)
   wait-ready   Wait until window is input-waiting
 
+Exit codes (inject-file / --confirm-receipt read-back — SSOT of the delivery contract; ccs-3bj):
+  0  accepted     Submit の積極証拠あり（clean submit）。caller は再送しない。
+  1  error         引数不正 / lock / resolve / paste 失敗など一般エラー。
+  2  gate          宛先が input-waiting に到達しない（--wait timeout / state 不一致）。未 paste。
+  4  未着(vanished) read-back が submit の積極証拠を得られず（真の消失/boot-race）。caller は再送する。
+  5  queued        busy 宛先で paste が CC message queue に積まれ受理された積極証拠あり（ccs-3bj）。
+                   caller は**再送禁止**（再送は重複 queue＝--clear-first では dequeue 不能）。
+                   検知は「live turn 観測 ∧ queued 固有 pane マーカー可視 ∧ sentinel 未 echo」の積極証拠
+                   のみで成立し、証拠不在なら 4 へ倒す（安全側＝silent 消失より二重投入）。queued 固有
+                   マーカーは SESSION_COMM_QUEUED_MARKER_RE で上書き可（空=queued 検知を無効化）。
+                   ※exit 3 は将来の busy 前 gate(a) 用に予約（本実装では未使用）。
+
 Environment:
   SESSION_COMM_SUBMIT_ENTER_MAX  paste 後に未 submit（input-waiting 滞留）なら撃つ追い Enter の上限
                                  （既定 3, 0=無効）。複数行 paste が [Pasted text +M lines] に
@@ -913,7 +925,19 @@ cmd_inject_file() {
     # 可視 ∧ submit と同時に旧 placeholder が scroll out して行数が増えない」極端な競合のみで、その場合も
     # budget 失効→再送＝二重投入側に倒れる（安全側＝silent 消失より二重投入を選ぶ・旧実装から不変の方針）。
     if [[ "$confirm_receipt" -gt 0 ]] && ! $no_enter; then
-        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline _rb_ph_out=0
+        local _rb_deadline _rb_state="" _rb_pane _rb_ok=false _rb_strong_streak=0 _rb_err_streak=0 _rb_vanish_streak=0 _rb_resub=0 _rb_interior="" _rb_scan="" _rb_cls _rb_xrc _rb_strong_new _rb_sline _rb_ph_out=0 _rb_saw_live_turn=0 _rb_queued=false _rb_queued_new=0 _rb_qline=""
+        # queued 受理述語（ccs-3bj）: busy 宛先で paste が CC message queue に積まれたときの pane マーカー。
+        # ★表示形態は cell 内 live 未確認（description [uncertain]：dim 表示 / placeholder / 専用 glyph の
+        #   いずれか不明）。よって (1) 保守的な既定 regex を置き、(2) SESSION_COMM_QUEUED_MARKER_RE で live e2e
+        #   時にコード改変なく上書き可能にする。env が **set かつ空**なら queued 検知を無効化（＝旧挙動＝全て
+        #   vanished→再送＝安全側）。既定 regex は複数の表示仮説を OR で束ね、boot 語彙（Loading/Starting/
+        #   Initializing/Connecting 等）と衝突しない語のみで構成する（boot-race の queued 誤受容を語彙面でも排除）。
+        local _rb_queued_re
+        if [[ -n "${SESSION_COMM_QUEUED_MARKER_RE+x}" ]]; then
+            _rb_queued_re="$SESSION_COMM_QUEUED_MARKER_RE"   # set（空文字なら queued 検知 disable）
+        else
+            _rb_queued_re='queued|Queued|will be sent|to be sent|pending message|message queued'
+        fi
         _rb_deadline=$(( $(date +%s) + confirm_receipt ))
         while [[ "$(date +%s)" -lt "$_rb_deadline" ]]; do
             _rb_pane=$(tmux capture-pane -p -t "$target" 2>/dev/null || true)
@@ -947,6 +971,11 @@ cmd_inject_file() {
                 done < <(printf '%s' "$_rb_scan" | grep -P -- "$_rb_strong_re" 2>/dev/null || true)
             fi
             if [[ "$_rb_strong_new" -eq 1 ]]; then
+                # live running turn の積極証拠を蓄積する（queued 受理の前提・ccs-3bj）。boot splash は
+                # timer-spinner を出さない（_rb_strong_re の verified 前提）ため、このフラグが立つのは
+                # 実 turn 実行中のみ＝boot-race を構造的に除外する。baseline 行差分要件は _rb_strong_new が
+                # 既に担保（round-3 wf_d526dfaa）ゆえ queued 経路もその要件を継承する。
+                _rb_saw_live_turn=1
                 _rb_strong_streak=$(( _rb_strong_streak + 1 ))
                 _rb_vanish_streak=0
                 if [[ "$_rb_strong_streak" -ge 2 ]]; then _rb_ok=true; break; fi
@@ -1001,6 +1030,46 @@ cmd_inject_file() {
                                         _rb_ok=true; break
                                     fi
                                 fi
+                                # (queued) busy 宛先で paste が CC message queue に積まれた積極証拠（ccs-3bj）。
+                                # vanished より必ず**先に**評価する（誤診 exit 4→呼出側再送→重複 queue を preempt）。
+                                # 成立条件（下記すべて・boot-race を構造排除する保守形）:
+                                #   (1) cls 0（interior 空＝DELIVERED）: paste が入力欄に残らず queue へ抜けた状態。
+                                #       vanished と同じ interior 相のみを対象にし、cls 2（ダイアログ占有）を除外。
+                                #   (2) _rb_saw_live_turn: live running turn を観測済み（timer-spinner。boot splash は
+                                #       出さない＝boot-race を構造除外）。(A) が 2 連続を得られず flicker でこぼれた
+                                #       turn を queued として救う。
+                                #   (3) queued 固有 pane マーカーが **outside view(_rb_scan) に新規 echo** で可視
+                                #       （_rb_queued_new。表示形態は live 未確認＝env 上書き可・空文字なら本分岐は
+                                #       無効化＝旧挙動）。★baseline-newness 要件（round-3 wf_d526dfaa と同型・
+                                #       ccs-3bj major fix）: マーカー行が baseline（paste 前 pane）に逐語存在する
+                                #       なら静的 transcript（前 turn 出力・running turn ストリーム）の一般語＝
+                                #       積極証拠にしない。既定 regex は 'queued'/'will be sent' 等の一般英語句で、
+                                #       pane 全走査 grep だと静的 transcript に居るだけで一致し偽 exit 5（silent
+                                #       消失＝本モジュール不変量違反）を招くため。strong マーカー (A) が同理由で
+                                #       baseline 行差分を必須化しているのを queued も継承する（whole-pane grep は
+                                #       使わず outside view のみを走査する）。
+                                #   (4) sentinel が outside(transcript) に未 echo（clean submit なら (B) が先に受理済み
+                                #       ＝ここへ来ない。二重の belt）。sentinel が短く無効化されている場合は本分岐は
+                                #       不発→vanished へ落ちる（安全側）。
+                                # 証拠不在（新規 marker 不可視 / live turn 未観測）なら不発→下の vanished へ落ちる
+                                # ＝安全側（silent 消失より二重投入）。既存 vanished 述語は一切変更しない（加算分岐のみ）。
+                                _rb_queued_new=0
+                                if [[ -n "$_rb_queued_re" ]]; then
+                                    while IFS= read -r _rb_qline; do
+                                        [[ -z "${_rb_qline//[[:space:]]/}" ]] && continue
+                                        if ! printf '%s' "$_rb_baseline" | grep -qF -- "$_rb_qline"; then
+                                            _rb_queued_new=1; break
+                                        fi
+                                    done < <(printf '%s' "$_rb_scan" | grep -E -- "$_rb_queued_re" 2>/dev/null || true)
+                                fi
+                                if [[ "$_rb_cls" -eq 0 ]] \
+                                   && [[ "$_rb_saw_live_turn" -eq 1 ]] \
+                                   && [[ -n "$_rb_queued_re" ]] \
+                                   && [[ -n "$_rb_sentinel" ]] \
+                                   && [[ "$_rb_queued_new" -eq 1 ]] \
+                                   && ! printf '%s' "$_rb_scan" | grep -qF -- "$_rb_sentinel"; then
+                                    _rb_queued=true; break
+                                fi
                                 # vanished: 入力欄は空で prompt が pane から全消失＝boot 再描画で paste が
                                 # 飲まれた。2 連続で早期 fail し呼出側の再送を早める（INCONCLUSIVE=cls2 は
                                 # ダイアログ等が interior を占める場合で、budget 失効に委ねる＝再送が
@@ -1026,7 +1095,14 @@ cmd_inject_file() {
             esac
             sleep 0.3
         done
-        if ! $_rb_ok; then
+        if $_rb_ok; then
+            : # accepted（clean submit）＝正常 exit 0（関数末尾へ）
+        elif $_rb_queued; then
+            # queued: busy 宛先で CC message queue へ着弾（積極証拠あり）。exit 5 で caller に「再送禁止」を伝える
+            # （deliver_prompt は exit 5 を terminal-success 扱い＝内部リトライ不発。ccs-3bj）。
+            echo "Info: prompt queued to '$window_name' (busy target; CC message queue へ着弾・turn 終了後に配送) — caller must NOT resend (ccs-3bj)" >&2
+            exit 5
+        else
             echo "Error: prompt not confirmed received by '$window_name' (state=${_rb_state:-unknown} after ${confirm_receipt}s / submit の積極証拠なし・ccs-mxv)" >&2
             exit 4
         fi

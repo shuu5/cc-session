@@ -53,6 +53,7 @@ MKTEMP_STUB
 if [[ "$1" == "inject-file" ]]; then
     echo "$*" >> "$COMM_CALL_LOG"
     n=$(cat "$INJECT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$INJECT_COUNTER"
+    if [[ -n "${QUEUED_ON:-}" && "$n" -eq "${QUEUED_ON}" ]]; then exit 5; fi  # queued（busy 宛先着弾・ccs-3bj）
     if [[ "$n" -le "${FAIL_TIMES:-0}" ]]; then exit 4; fi   # 未着（welcome drop 相当）
     exit 0                                                  # 受理
 fi
@@ -115,4 +116,25 @@ _inject_calls() { wc -l < "$COMM_CALL_LOG" | tr -d ' '; }
     [ "$status" -eq 0 ]
     [[ "$(sed -n '1p' "$COMM_CALL_LOG")" == *"--confirm-receipt"* ]]
     [[ "$(sed -n '1p' "$COMM_CALL_LOG")" == *"--wait"* ]]
+}
+
+# --- queued（inject-file exit 5）= terminal-success・内部リトライ不発の pin（ccs-3bj / F3 強化形 acceptance(1)）---
+
+@test "queued: 初回 exit 5（busy 着弾）は terminal-success・再送しない（inject-file 1 回・prompt injected queued）" {
+    export QUEUED_ON=1
+    run bash "$STUB_SCRIPTS/cld-spawn" "test prompt"
+    [ "$status" -eq 0 ]                       # queued は成功扱い（非 0 で落とさない）
+    [[ "$output" == *"prompt injected"* ]]
+    [[ "$output" == *"queued"* ]]            # queued であることを caller に提示
+    [ "$(_inject_calls)" -eq 1 ]            # ★内部 CLD_INJECT_ATTEMPTS リトライが発火しない（重複 queue を作らない）
+}
+
+@test "queued: 初回未着→2 回目 exit 5（queued）で terminal-success・以降リトライしない（inject-file 2 回）" {
+    export FAIL_TIMES=1     # 1 回目 exit 4（未着→--clear-first で再送）
+    export QUEUED_ON=2      # 2 回目 exit 5（queued）→ terminal-success で停止
+    run bash "$STUB_SCRIPTS/cld-spawn" "test prompt"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"queued"* ]]
+    [ "$(_inject_calls)" -eq 2 ]            # 2 回目で queued 停止＝3 回目（残リトライ）は発火しない
+    [[ "$(sed -n '2p' "$COMM_CALL_LOG")" == *"--clear-first"* ]]
 }

@@ -84,13 +84,27 @@ deliver_prompt() {
     # CONFIRM_BUDGET: read-back が「受理」を確認する 1 試行あたりの猶予秒（cld-spawn 既定 10s）。
     local _confirm_budget="${CLD_CONFIRM_BUDGET:-10}"
     local _max_attempts="${CLD_INJECT_ATTEMPTS:-3}"
-    local _ok=false _attempt
+    local _ok=false _attempt _rc
+    # inject-file の exit code 意味論（SSOT=session-comm.sh usage の Exit codes 表・ccs-3bj）:
+    #   0 = 受理（clean submit）              → terminal-success（再送しない）
+    #   5 = queued（busy 宛先で CC message queue へ着弾）→ terminal-success（**再送禁止**。再送は重複 queue＝
+    #       --clear-first では CC の message queue を dequeue できず 1 copy ずつ純増する・orch-uwv6 実測 4 重複）。
+    #       DELIVER_QUEUED=true にして呼出側が clean submit と queued を判別できるようにする。
+    #   その他非 0（1/2/4 等）= 未着/失敗       → 有界リトライ（attempt>1 は --clear-first で再送）
+    DELIVER_QUEUED=false
     for _attempt in $(seq 1 "$_max_attempts"); do
         local _clear=()
         if [[ "$_attempt" -gt 1 ]]; then _clear=(--clear-first); fi
-        if "$SCRIPT_DIR/session-comm.sh" inject-file "$_win" "$_pf" \
-                --wait "$WAIT_TIMEOUT" --confirm-receipt "$_confirm_budget" ${_clear[@]+"${_clear[@]}"}; then
+        _rc=0
+        "$SCRIPT_DIR/session-comm.sh" inject-file "$_win" "$_pf" \
+                --wait "$WAIT_TIMEOUT" --confirm-receipt "$_confirm_budget" ${_clear[@]+"${_clear[@]}"} || _rc=$?
+        if [[ "$_rc" -eq 0 ]]; then
             _ok=true
+            break
+        elif [[ "$_rc" -eq 5 ]]; then
+            # queued: 積極証拠つきで CC message queue へ着弾済み＝送達成功。再送すると重複するため即 break。
+            _ok=true
+            DELIVER_QUEUED=true
             break
         fi
         if [[ "$_attempt" -lt "$_max_attempts" ]]; then sleep 1; fi
@@ -141,6 +155,7 @@ CLD_MODEL=""
 CLD_EFFORT=""         # cld→claude へ透過する --effort（空=未指定＝settings/model 既定に委ねる）
 DISALLOWED_TOOLS=()   # cld→claude へ透過する --disallowed-tools のトークン列（空=未指定）
 INJECT_EXISTING=""    # 非空なら「spawn せず既存 window へ inject」モード（値=対象 window）
+DELIVER_QUEUED=false  # deliver_prompt が queued（inject-file exit 5）で成功したかを呼出側へ伝える（ccs-3bj）
 
 # Parse options
 while [[ $# -gt 0 ]]; do
@@ -291,7 +306,11 @@ if [[ -n "$INJECT_EXISTING" ]]; then
         fi
     fi
     if deliver_prompt "$INJECT_EXISTING" "$PROMPT"; then
-        echo "prompt injected → '$INJECT_EXISTING' (existing)"
+        if $DELIVER_QUEUED; then
+            echo "prompt injected → '$INJECT_EXISTING' (existing, queued: busy 宛先の CC message queue へ着弾・再送なし)"
+        else
+            echo "prompt injected → '$INJECT_EXISTING' (existing)"
+        fi
         exit 0
     fi
     echo "Error: プロンプトの送達に失敗しました（inject-existing: $INJECT_EXISTING／read-back 未確認）" >&2
@@ -518,7 +537,11 @@ if [[ ! "$TARGET_SESSION" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || [[ ! "$WINDOW_NAM
     echo "Warning: session/window 名が送達修飾の安全文字集合外のため bare window 名で送達します（session='$TARGET_SESSION' window='$WINDOW_NAME'。複数 session に同名 window がある場合は誤送達の可能性）" >&2
 fi
 if deliver_prompt "$_DELIVER_TGT" "$PROMPT"; then
-    echo "prompt injected → '$_DELIVER_TGT'"
+    if $DELIVER_QUEUED; then
+        echo "prompt injected → '$_DELIVER_TGT' (queued: busy 宛先の CC message queue へ着弾・再送なし)"
+    else
+        echo "prompt injected → '$_DELIVER_TGT'"
+    fi
     exit 0
 fi
 echo "Error: プロンプトの送達に失敗しました（${CLD_INJECT_ATTEMPTS:-3}回試行・各${WAIT_TIMEOUT}秒待機／read-back 未確認）" >&2
